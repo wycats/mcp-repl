@@ -1,0 +1,36 @@
+[package]
+name = "nu-mcp-repl"
+version = "0.1.0"
+edition = "2024"
+resolver = "3"
+description = "A Nushell-based REPL for MCP (Model Context Protocol)"
+
+[dependencies]
+
+# Other dependencies
+anyhow = "1.0"
+clap = { version = "4.3", features = ["derive"] }
+env_logger = "0.11.8"
+log = "0.4"
+# Nushell core dependencies - use a known compatible set of versions
+
+nu-cli = { version = "0.103.0", default-features = false }
+nu-cmd-lang = { version = "0.103.0", features = ["os"] }
+nu-command = { version = "0.103.0", features = ["os"] }
+nu-engine = { version = "0.103.0", default-features = false }
+nu-json = { version = "0.103.0", default-features = false }
+nu-path = { version = "0.103.0", default-features = false }
+nu-protocol = "0.103.0"
+zip = "=2.5.0"
+
+# MCP SDK for interacting with MCP servers
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", package = "rmcp", features = [
+    "client",
+    "transport-child-process",
+    "transport-io",
+    "transport-sse",
+    "transport-sse-server",
+] }
+serde_json = { version = "1.0.140" }
+tokio = { version = "1.28", features = ["rt-multi-thread"] }
+shell-words = "1.1.0"
