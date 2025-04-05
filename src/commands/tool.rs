@@ -1,13 +1,13 @@
-use crate::client::mcp::{McpClient, Tool};
-use crate::commands::utils;
+use anyhow::Result;
 use nu_protocol::{
-    Category, PipelineData, ShellError, Signature, Span, SyntaxShape, Type, Value,
-    ast::Call,
-    engine::{Command, CommandArgs, EngineState, Stack},
+    Category, IntoPipelineData, PipelineData, ShellError, Signature, Type, Value,
+    engine::{Call, Command, EngineState, Stack},
 };
-use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use crate::commands::utils::{self};
+
+/// Command for dynamic tool usage
 #[derive(Clone)]
 pub struct ToolCommand;
 
@@ -18,18 +18,16 @@ impl Command for ToolCommand {
 
     fn signature(&self) -> Signature {
         Signature::build("tool")
-            .optional(
-                "tool_name",
-                SyntaxShape::String,
-                "The name of the MCP tool to invoke",
-            )
-            .rest("args", SyntaxShape::Any, "Arguments to pass to the tool")
             .category(Category::Custom("mcp".into()))
-            .input_output_types(vec![(Type::Any, Type::Any)])
+            .input_output_types(vec![(Type::Nothing, Type::String)])
     }
 
     fn description(&self) -> &str {
-        "Invoke an MCP tool with dynamic arguments"
+        "Various commands for interacting with MCP tools"
+    }
+
+    fn extra_description(&self) -> &str {
+        "You must use one of the following subcommands. Using this command as-is will only produce this help message."
     }
 
     fn run(
@@ -39,270 +37,165 @@ impl Command for ToolCommand {
         call: &Call,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let span = call.head;
+        // Show help when the tool command is called directly without subcommands
+        // This mimics the behavior of Nushell's built-in namespaces like 'str'
+        Ok(Value::string(
+            nu_engine::get_full_help(self, engine_state, stack),
+            call.head,
+        )
+        .into_pipeline_data())
+    }
+}
 
-        // Get the tool name from the first argument
-        let tool_name: Option<String> = call.opt(engine_state, stack, 0)?;
+// Implementation of ToolCommand methods
+impl ToolCommand {
+    // Helper method to list all dynamic commands
+    fn list_dynamic_commands(
+        &self,
+        engine_state: &EngineState,
+        _stack: &mut Stack,
+        call: &Call,
+    ) -> Result<PipelineData, ShellError> {
+        match utils::get_command_registry() {
+            Ok(registry) => {
+                if let Ok(registry_guard) = registry.lock() {
+                    let commands = registry_guard.get_command_names();
+                    let mut values = Vec::new();
 
-        // Get the MCP client from engine state
-        let client = utils::get_mcp_client(engine_state)?;
+                    for (idx, name) in commands.iter().enumerate() {
+                        if let Some(cmd_info) = registry_guard.get_command_info(name) {
+                            // Get the declaration by ID
+                            let decl = engine_state.get_decl(cmd_info.decl_id);
+                            let mut record = nu_protocol::Record::new();
+                            record.push("#", Value::int(idx as i64, call.head));
+                            record.push("name", Value::string(name, call.head));
+                            record
+                                .push("description", Value::string(decl.description(), call.head));
+                            record.push("category", Value::string("dynamic", call.head));
 
-        if let Some(tool_name) = tool_name {
-            // Get the tools registry
-            let tools = utils::get_tools_registry(engine_state)?;
-            let tools_guard = tools.lock().map_err(|_| ShellError::GenericError {
-                error: "Failed to lock tools registry".into(),
-                msg: "Internal synchronization error".into(),
-                span: Some(span),
-                help: None,
-                inner: Vec::new(),
-            })?;
-
-            // Find the tool by name
-            let tool = tools_guard.iter().find(|t| t.name == tool_name);
-
-            if let Some(tool) = tool {
-                // Build arguments based on schema
-                let args = self.extract_tool_args(tool, engine_state, stack, call)?;
-
-                // Create a tokio runtime for async operations
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| ShellError::GenericError {
-                        error: "Failed to create Tokio runtime".into(),
-                        msg: e.to_string(),
-                        span: Some(span),
-                        help: None,
-                        inner: Vec::new(),
-                    })?;
-
-                // Execute the tool call
-                let result = runtime.block_on(async {
-                    let client_guard = client.lock().map_err(|_| ShellError::GenericError {
-                        error: "Failed to lock MCP client".into(),
-                        msg: "Internal synchronization error".into(),
-                        span: Some(span),
-                        help: None,
-                        inner: Vec::new(),
-                    })?;
-
-                    if let Some(client) = &*client_guard {
-                        client.call_tool(&tool.name, args).await
-                    } else {
-                        Err(ShellError::GenericError {
-                            error: "MCP client not initialized".into(),
-                            msg: "MCP client is not connected".into(),
-                            span: Some(span),
-                            help: Some("Connect to an MCP server first".into()),
-                            inner: Vec::new(),
-                        })
+                            values.push(Value::record(record, call.head));
+                        }
                     }
-                })?;
 
-                // Process the result
-                process_tool_result(result, span)
-            } else {
-                Err(ShellError::GenericError {
-                    error: format!("Unknown tool: {}", tool_name),
-                    msg: "The specified tool was not found".into(),
-                    span: Some(span),
-                    help: Some("Use 'mcp-list-tools' to see available tools".into()),
-                    inner: Vec::new(),
-                })
-            }
-        } else {
-            // No tool specified, show help with available tools
-            let mut vals = Vec::new();
-            let mut cols = vec!["name".to_string(), "description".to_string()];
-
-            // Get available tools
-            let tools = match utils::get_tools_registry(engine_state) {
-                Ok(tools) => tools,
-                Err(_) => {
-                    return Err(ShellError::GenericError {
-                        error: "No tools available".into(),
-                        msg: "Tool registry not found".into(),
-                        span: Some(span),
-                        help: Some("Make sure the MCP client is connected".into()),
-                        inner: Vec::new(),
-                    });
+                    Ok(Value::list(values, call.head).into_pipeline_data())
+                } else {
+                    Err(ShellError::GenericError {
+                        error: "Registry lock failed".into(),
+                        msg: "Could not access the dynamic command registry".into(),
+                        span: Some(call.head),
+                        help: None,
+                        inner: vec![],
+                    })
                 }
-            };
-
-            let tools_guard = tools.lock().map_err(|_| ShellError::GenericError {
-                error: "Failed to lock tools registry".into(),
-                msg: "Internal synchronization error".into(),
-                span: Some(span),
-                help: None,
-                inner: Vec::new(),
-            })?;
-
-            // Format tools into a record for display
-            for tool in tools_guard.iter() {
-                vals.push(Value::String {
-                    val: tool.name.to_string(),
-                    span,
-                });
-
-                vals.push(Value::String {
-                    val: tool.description.clone().unwrap_or_default(),
-                    span,
-                });
             }
-
-            Ok(PipelineData::Value(
-                Value::Record { cols, vals, span },
-                None,
-            ))
+            Err(e) => Err(ShellError::GenericError {
+                error: "Registry error".into(),
+                msg: e.to_string(),
+                span: Some(call.head),
+                help: None,
+                inner: vec![],
+            }),
         }
     }
 }
 
-// Helper methods implemented separately
-impl ToolCommand {
-    // Extract and validate tool arguments from call
-    fn extract_tool_args(
+/// Command to list all available dynamic commands
+#[derive(Clone)]
+pub struct ToolListCommand;
+
+impl Command for ToolListCommand {
+    fn name(&self) -> &str {
+        "tool list"
+    }
+
+    fn signature(&self) -> Signature {
+        Signature::build("tool list")
+            .category(Category::Custom("mcp".into()))
+            .input_output_types(vec![(Type::Any, Type::Table(vec![].into()))])
+    }
+
+    fn description(&self) -> &str {
+        "List available dynamic commands"
+    }
+
+    fn extra_description(&self) -> &str {
+        "Display a list of all registered dynamic commands"
+    }
+
+    fn run(
         &self,
-        tool: &Tool,
         engine_state: &EngineState,
         stack: &mut Stack,
         call: &Call,
-    ) -> Result<serde_json::Value, ShellError> {
-        // Get rest arguments starting from index 1 (after tool name)
-        let args = call.rest(engine_state, stack, 1)?;
-
-        // For now, implement a simple conversion of arguments to JSON
-        // This is a placeholder for more sophisticated schema-based extraction
-        let mut params = serde_json::Map::new();
-
-        // Process args in pairs (param_name, param_value)
-        for chunk in args.chunks(2) {
-            if chunk.len() == 2 {
-                let param_name = match chunk[0].as_string() {
-                    Ok(name) => name,
-                    Err(_) => {
-                        return Err(ShellError::GenericError {
-                            error: "Invalid parameter name".into(),
-                            msg: "Parameter names must be strings".into(),
-                            span: Some(chunk[0].span()?),
-                            help: Some("Use 'param_name param_value' format".into()),
-                            inner: Vec::new(),
-                        });
-                    }
-                };
-
-                // Convert Nu Value to serde_json::Value
-                let param_value = nu_value_to_json_value(&chunk[1])?;
-                params.insert(param_name, param_value);
-            } else if chunk.len() == 1 {
-                return Err(ShellError::GenericError {
-                    error: "Incomplete parameter".into(),
-                    msg: "Each parameter must have a value".into(),
-                    span: Some(chunk[0].span()?),
-                    help: Some("Use 'param_name param_value' format".into()),
-                    inner: Vec::new(),
-                });
-            }
-        }
-
-        Ok(serde_json::Value::Object(params))
+        _input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        // Use our new implementation that lists only tool namespace commands
+        crate::commands::dynamic_commands::dynamic_tool_commands::list_tool_commands(
+            engine_state,
+            call,
+        )
     }
 }
 
-// Helper function to convert Nu Value to serde_json::Value
-fn nu_value_to_json_value(value: &Value) -> Result<serde_json::Value, ShellError> {
-    let span = value.span()?;
+/// Register a dynamic command using the tool system
+pub fn register_dynamic_tool(
+    engine_state: &mut EngineState,
+    name: &str,
+    signature: Signature,
+    description: String,
+    run_fn: Box<
+        dyn Fn(&EngineState, &mut Stack, &Call, PipelineData) -> Result<PipelineData, ShellError>
+            + Send
+            + Sync
+            + 'static,
+    >,
+) -> Result<()> {
+    // Create a dynamic command that wraps the function
+    let command = DynamicToolCommand {
+        name: name.to_string(),
+        signature,
+        description,
+        run_fn: Arc::from(run_fn),
+    };
 
-    match value {
-        Value::String { val, .. } => Ok(serde_json::Value::String(val.clone())),
-        Value::Int { val, .. } => Ok(serde_json::Value::Number((*val).into())),
-        Value::Float { val, .. } => {
-            // Handle potential invalid float values for JSON
-            if val.is_nan() || val.is_infinite() {
-                Err(ShellError::GenericError {
-                    error: "Invalid number".into(),
-                    msg: "NaN or infinity cannot be represented in JSON".into(),
-                    span: Some(span),
-                    help: None,
-                    inner: Vec::new(),
-                })
-            } else {
-                // Convert to serde_json::Number
-                match serde_json::Number::from_f64(*val) {
-                    Some(n) => Ok(serde_json::Value::Number(n)),
-                    None => Err(ShellError::GenericError {
-                        error: "Failed to convert float".into(),
-                        msg: "The float value could not be represented in JSON".into(),
-                        span: Some(span),
-                        help: None,
-                        inner: Vec::new(),
-                    }),
-                }
-            }
-        }
-        Value::Boolean { val, .. } => Ok(serde_json::Value::Bool(*val)),
-        Value::List { vals, .. } => {
-            let mut json_array = Vec::new();
-            for item in vals {
-                json_array.push(nu_value_to_json_value(item)?);
-            }
-            Ok(serde_json::Value::Array(json_array))
-        }
-        Value::Record { cols, vals, .. } => {
-            let mut map = serde_json::Map::new();
-            for (col, val) in cols.iter().zip(vals.iter()) {
-                map.insert(col.clone(), nu_value_to_json_value(val)?);
-            }
-            Ok(serde_json::Value::Object(map))
-        }
-        Value::Nothing { .. } => Ok(serde_json::Value::Null),
-        _ => Err(ShellError::GenericError {
-            error: "Unsupported value type".into(),
-            msg: "This value type cannot be converted to JSON".into(),
-            span: Some(span),
-            help: None,
-            inner: Vec::new(),
-        }),
-    }
+    // Register the command
+    utils::register_dynamic_command(engine_state, Box::new(command))
 }
 
-// Process MCP tool results into Nushell values
-fn process_tool_result(
-    content: Vec<rmcp::model::Content>,
-    span: Span,
-) -> Result<PipelineData, ShellError> {
-    // Convert rmcp::model::Content to Value
-    // For now, return a simple format
-    let mut rows = Vec::new();
+/// A command that wraps a function for dynamic execution
+#[derive(Clone)]
+struct DynamicToolCommand {
+    name: String,
+    signature: Signature,
+    description: String,
+    run_fn: Arc<
+        dyn Fn(&EngineState, &mut Stack, &Call, PipelineData) -> Result<PipelineData, ShellError>
+            + Send
+            + Sync
+            + 'static,
+    >,
+}
 
-    for item in content {
-        // Convert each content item to a Nu value
-        // This is a simplified implementation
-        // Could be expanded based on different content types
-        match item {
-            rmcp::model::Content::Text(text) => {
-                rows.push(Value::String { val: text, span });
-            }
-            // Handle other content types here
-            _ => {
-                // For now, convert other types to their debug representation
-                rows.push(Value::String {
-                    val: format!("{:?}", item),
-                    span,
-                });
-            }
-        }
+impl Command for DynamicToolCommand {
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    // If we have multiple results, return as a list
-    if rows.len() > 1 {
-        Ok(PipelineData::Value(Value::List { vals: rows, span }, None))
-    } else if rows.len() == 1 {
-        // If we have exactly one result, return it directly
-        Ok(PipelineData::Value(rows.into_iter().next().unwrap(), None))
-    } else {
-        // If we have no results, return Nothing
-        Ok(PipelineData::Value(Value::Nothing { span }, None))
+    fn signature(&self) -> Signature {
+        self.signature.clone()
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn run(
+        &self,
+        engine_state: &EngineState,
+        stack: &mut Stack,
+        call: &Call,
+        _input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        (self.run_fn)(engine_state, stack, call, _input)
     }
 }

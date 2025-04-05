@@ -4,11 +4,16 @@ use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use nu_cmd_lang::create_default_context;
 use nu_protocol::engine::{EngineState, Stack, StateWorkingSet};
-use nu_protocol::{Config, Span, Value};
+use nu_protocol::{Config, HistoryConfig, HistoryFileFormat, Span, Value};
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::runtime::Runtime;
+
+// Define a static variable to hold our custom history path
+static HISTORY_PATH: Lazy<std::sync::Mutex<Option<String>>> =
+    Lazy::new(|| std::sync::Mutex::new(None));
 
 // Import Nushell's help commands directly
 use crate::commands::builtin::add_shell_command_context;
@@ -39,6 +44,11 @@ impl McpRepl {
         config.hooks.env_change = HashMap::new();
         config.hooks.pre_prompt = Vec::new();
         config.hooks.pre_execution = Vec::new();
+
+        // Customize history configuration for MCP-REPL
+        // Create a separate history file in the .mcp-repl directory
+        let history_config = Self::create_custom_history_config()?;
+        config.history = history_config;
 
         // Apply the config
         engine_state.config = Arc::new(config);
@@ -177,6 +187,19 @@ impl McpRepl {
 
         // Skip reading any config files - we want a completely isolated environment
 
+        // Get the custom history path we set earlier in create_custom_history_config
+        // If we have a custom history path, use it
+        if let Some(path) = HISTORY_PATH.lock().unwrap().clone() {
+            info!("Using custom MCP-REPL history path: {}", path);
+
+            // Store the custom path directly in the engine state for reference during evaluation
+            // This will be used by the REPL to override the default history file location
+            self.engine_state.add_env_var(
+                "HISTORY_FILE".to_string(),
+                Value::string(path, Span::unknown()),
+            );
+        }
+
         // Current signature of evaluate_repl in nu-cli 0.93.0+
         nu_cli::evaluate_repl(
             &mut self.engine_state,
@@ -197,11 +220,49 @@ impl McpRepl {
             // Store the MCP client in the engine state for command access
             crate::commands::utils::set_mcp_client(&mut self.engine_state, mcp_client.clone());
         }
+
+        // Register our test dynamic commands as a prototype
+        if let Err(err) = crate::commands::register_test_commands(&mut self.engine_state) {
+            log::warn!("Failed to register test dynamic commands: {}", err);
+        } else {
+            log::info!("Successfully registered test dynamic commands");
+        }
+
         Ok(())
     }
 
     /// Get a reference to the MCP client
     pub fn mcp_client(&self) -> Option<&Arc<McpClient>> {
         self.mcp_client.as_ref()
+    }
+
+    /// Create a custom history configuration for MCP-REPL
+    fn create_custom_history_config() -> Result<HistoryConfig> {
+        // Create a custom history path in the user's home directory
+        let home_dir = dirs::home_dir().context("Could not determine home directory")?;
+        let mcp_repl_dir = home_dir.join(".mcp-repl");
+
+        // Create the directory if it doesn't exist
+        if !mcp_repl_dir.exists() {
+            std::fs::create_dir_all(&mcp_repl_dir)
+                .context("Failed to create .mcp-repl directory")?;
+        }
+
+        // Use a custom history file
+        let history_file = mcp_repl_dir.join("history.txt");
+        info!("Using custom history file: {:?}", history_file);
+
+        // Store the path string for later use in the run method
+        let history_path_str = history_file.to_string_lossy().to_string();
+
+        // Create a custom history configuration
+        let mut history_config = HistoryConfig::default();
+        history_config.file_format = HistoryFileFormat::Plaintext;
+
+        // Update the history path in the static
+        let mut history_path = HISTORY_PATH.lock().unwrap();
+        *history_path = Some(history_path_str);
+
+        Ok(history_config)
     }
 }
