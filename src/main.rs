@@ -42,16 +42,16 @@ enum ConnectionType {
 }
 
 fn main() -> Result<()> {
-    // Initialize logging based on verbosity flag or RUST_LOG env var
-    let env = env_logger::Env::default().filter_or(
-        "RUST_LOG",
-        if env::var("RUST_LOG").is_ok() {
-            "info"
-        } else {
-            "warn"
-        },
-    );
-    env_logger::init_from_env(env);
+    // Initialize logging with filter for prompt warnings
+    let default_level = if env::var("RUST_LOG").is_ok() {
+        "info"
+    } else {
+        "warn"
+    };
+
+    env_logger::Builder::from_env(env_logger::Env::default().filter_or("RUST_LOG", default_level))
+        .filter_module("nu_cli::prompt_update", log::LevelFilter::Error)
+        .init();
 
     // Parse command line arguments
     let args = CliArgs::parse();
@@ -77,71 +77,68 @@ fn main() -> Result<()> {
         .build()
         .context("Failed to create Tokio runtime")?;
 
-    // Run the REPL
-    runtime.block_on(async {
-        // Initialize the MCP client with the specified connection type if provided
-        let mcp_client = if let Some(connection) = connection {
-            match connection {
-                ConnectionType::Sse { url } => {
-                    println!("Connecting to MCP server via SSE at: {}", url);
-                    let connection_type = mcp::McpConnectionType::Sse(url.clone());
+    // Initialize the MCP client with the specified connection type if provided
+    let mcp_client = if let Some(connection) = connection {
+        match connection {
+            ConnectionType::Sse { url } => {
+                println!("Connecting to MCP server via SSE at: {}", url);
+                let connection_type = mcp::McpConnectionType::Sse(url.clone());
 
-                    // Connect to the server
-                    match mcp::McpClient::connect(connection_type).await {
-                        Ok(client) => {
-                            println!("Successfully connected to MCP server via SSE");
-                            Some(Arc::new(client))
-                        }
-                        Err(err) => {
-                            panic!(
-                                "Warning: Failed to connect to MCP server ({}): {}",
-                                url.clone(),
-                                err
-                            );
-                        }
+                // Connect to the server
+                match runtime.block_on(mcp::McpClient::connect(connection_type)) {
+                    Ok(client) => {
+                        println!("Successfully connected to MCP server via SSE");
+                        Some(Arc::new(client))
                     }
-                }
-                ConnectionType::Command { command } => {
-                    println!("Launching MCP server via command: {}", command);
-                    let connection_type = mcp::McpConnectionType::Command(command.clone());
-
-                    // Connect to the server
-                    match mcp::McpClient::connect(connection_type).await {
-                        Ok(client) => {
-                            println!("Successfully connected to MCP server via command");
-                            Some(Arc::new(client))
-                        }
-                        Err(err) => {
-                            panic!(
-                                "Warning: Failed to connect to MCP server ({}): {}",
-                                command.clone(),
-                                err
-                            );
-                        }
+                    Err(err) => {
+                        panic!(
+                            "Warning: Failed to connect to MCP server ({}): {}",
+                            url.clone(),
+                            err
+                        );
                     }
                 }
             }
-        } else {
-            println!("No MCP server connection specified. Use 'sse' or 'command' subcommand.");
-            println!("You can still run the shell, but MCP commands will not be available.");
-            None
-        };
+            ConnectionType::Command { command } => {
+                println!("Launching MCP server via command: {}", command);
+                let connection_type = mcp::McpConnectionType::Command(command.clone());
 
-        // Initialize the Nushell-based REPL
-        println!("Starting MCP Nushell REPL - Type 'exit' to quit");
-        let mut repl =
-            shell::McpRepl::new(mcp_client).context("Failed to initialize MCP REPL shell")?;
-
-        // Run the REPL and handle any errors
-        match repl.run().await {
-            Ok(_) => {
-                println!("MCP REPL session ended");
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("Error in MCP REPL session: {}", e);
-                Err(e.into())
+                // Connect to the server
+                match runtime.block_on(mcp::McpClient::connect(connection_type)) {
+                    Ok(client) => {
+                        println!("Successfully connected to MCP server via command");
+                        Some(Arc::new(client))
+                    }
+                    Err(err) => {
+                        panic!(
+                            "Warning: Failed to connect to MCP server ({}): {}",
+                            command.clone(),
+                            err
+                        );
+                    }
+                }
             }
         }
-    })
+    } else {
+        println!("No MCP server connection specified");
+        None
+    };
+
+    // Initialize the Nushell-based REPL
+    println!("Starting MCP Nushell REPL - Type 'exit' to quit");
+    let runtime = Arc::new(runtime);
+    let mut repl = shell::McpRepl::new(mcp_client, runtime.clone())
+        .context("Failed to initialize MCP REPL shell")?;
+
+    // Run the REPL and handle any errors
+    match runtime.block_on(repl.run()) {
+        Ok(_) => {
+            println!("MCP REPL session ended");
+            Ok(())
+        }
+        Err(err) => {
+            println!("Error during REPL session: {}", err);
+            Err(err)
+        }
+    }
 }

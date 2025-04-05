@@ -1,5 +1,6 @@
+use nu_engine::CallExt;
 use nu_protocol::{
-    Category, PipelineData, ShellError, Signature, Value,
+    Category, PipelineData, ShellError, Signature, SyntaxShape, Value,
     engine::{Command, EngineState, Stack},
 };
 
@@ -14,6 +15,7 @@ impl Command for ListToolsCommand {
 
     fn signature(&self) -> Signature {
         Signature::build(String::from("mcp-list-tools"))
+            .switch("long", "Show long description", Some('l'))
             .category(Category::Custom(String::from("mcp")))
     }
 
@@ -24,11 +26,12 @@ impl Command for ListToolsCommand {
     fn run(
         &self,
         engine_state: &EngineState,
-        _stack: &mut Stack,
+        stack: &mut Stack,
         call: &nu_protocol::engine::Call<'_>,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let span = call.head;
+        let long: bool = call.has_flag(engine_state, stack, "long")?;
 
         // Try to get the MCP client from the utils
         let client = match crate::commands::utils::get_mcp_client(engine_state) {
@@ -36,7 +39,7 @@ impl Command for ListToolsCommand {
             Err(err) => {
                 return Err(ShellError::GenericError {
                     error: "Could not access MCP client".into(),
-                    msg: err.into(),
+                    msg: err.to_string(),
                     span: Some(span),
                     help: Some("Make sure the MCP client is connected".into()),
                     inner: Vec::new(),
@@ -44,54 +47,38 @@ impl Command for ListToolsCommand {
             }
         };
 
-        // Create a tokio runtime for async operations
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| ShellError::GenericError {
-                error: "Failed to create Tokio runtime".into(),
-                msg: e.to_string(),
-                span: Some(span),
-                help: None,
-                inner: Vec::new(),
-            })?;
-
         // Get tools from the MCP client
-        let result: Result<Vec<rmcp::model::Tool>, anyhow::Error> = runtime.block_on(async {
-            // Use the get_tools method to fetch all tools
-            Ok(client.get_tools().to_vec())
-        });
+        let tools = client.get_tools().to_vec();
+        let mut record = crate::util::NuValueMap::default();
 
-        match result {
-            Ok(tools) => {
-                // Convert the tools to a table of records
-                let mut table = Vec::new();
+        for tool in tools {
+            let mut tool_record = crate::util::NuValueMap::default();
 
-                for tool in tools {
-                    let mut record = crate::util::NuValueMap::default();
-
-                    record.add_string("name", tool.name.clone(), span);
-
-                    if let Some(desc) = &tool.description {
-                        record.add_string("description", desc.clone(), span);
-                    }
-
-                    // Add schema information if available
-                    // input_schema is already an Arc<Map<String, Value>>, not an Option
-                    record.add_string("schema", format!("{:?}", &tool.input_schema), span);
-
-                    table.push(record.into_value(span));
-                }
-
-                Ok(PipelineData::Value(Value::list(table, span), None))
+            if let Some(desc) = &tool.description {
+                tool_record.add_string("description", desc.clone(), span);
             }
-            Err(e) => Err(ShellError::GenericError {
-                error: "Failed to list tools".into(),
-                msg: e.to_string(),
-                span: Some(span),
-                help: None,
-                inner: Vec::new(),
-            }),
+
+            if long {
+                // Add schema information if available
+                // Convert the JSON schema to a proper Nu value object
+                // Use schema_as_json_value() to get a serde_json::Value first
+                let schema_json = tool.schema_as_json_value();
+                let schema_value = match crate::commands::call_tool::convert_json_value_to_nu_value(
+                    &schema_json,
+                    span,
+                ) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        // Fallback to string representation if conversion fails
+                        Value::string(format!("{:?}", &tool.input_schema), span)
+                    }
+                };
+                tool_record.add("schema", schema_value);
+            }
+
+            record.add(tool.name, tool_record.into_value(span));
         }
+
+        Ok(PipelineData::Value(record.into_value(span), None))
     }
 }

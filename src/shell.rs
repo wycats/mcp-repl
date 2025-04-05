@@ -8,6 +8,7 @@ use nu_protocol::{Config, Span, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::runtime::Runtime;
 
 // Import Nushell's help commands directly
 use crate::commands::builtin::add_shell_command_context;
@@ -24,7 +25,7 @@ pub struct McpRepl {
 
 impl McpRepl {
     /// Create a new MCP REPL instance
-    pub fn new(mcp_client: Option<Arc<McpClient>>) -> Result<Self> {
+    pub fn new(mcp_client: Option<Arc<McpClient>>, runtime: Arc<Runtime>) -> Result<Self> {
         // Initialize a clean Nushell engine with default commands
         let mut engine_state = create_default_context();
 
@@ -47,6 +48,9 @@ impl McpRepl {
 
         // Setup a stack with essential environment variables
         let mut stack = Stack::new();
+
+        // Store the runtime in engine state
+        crate::commands::utils::set_tokio_runtime(&mut engine_state, runtime);
 
         // Set MCP environment variables if present
         if let Ok(url) = std::env::var("MCP_URL") {

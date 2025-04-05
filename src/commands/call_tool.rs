@@ -1,7 +1,8 @@
 use nu_engine::CallExt;
 
 use nu_protocol::{
-    Category, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
+    Category, PipelineData, Record, ShellError, Signature, Span, SyntaxShape, Value,
+    ast::PathMember,
     engine::{Command, EngineState, Stack},
 };
 use rmcp::model::RawContent;
@@ -51,7 +52,7 @@ impl Command for CallToolCommand {
             if let Ok(record) = args.as_record() {
                 let mut map = serde_json::Map::new();
                 for (k, v) in record.iter() {
-                    map.insert(k.clone(), nu_value_to_json_value(v, span)?);
+                    map.insert(k.clone(), convert_nu_value_to_json_value(v, span)?);
                 }
                 Some(map)
             } else {
@@ -158,85 +159,143 @@ impl Command for CallToolCommand {
     }
 }
 
-// Convert a Nushell Value to a serde_json::Value
-fn nu_value_to_json_value(value: &Value, span: Span) -> Result<serde_json::Value, ShellError> {
-    match value {
-        Value::String { val, .. } => Ok(json!(val)),
-        Value::Int { val, .. } => Ok(json!(val)),
-        Value::Float { val, .. } => Ok(json!(val)),
-        Value::Bool { val, .. } => Ok(json!(val)),
-        Value::Nothing { .. } => Ok(serde_json::Value::Null),
-        Value::Record { .. } => {
-            let mut obj = serde_json::Map::new();
-
-            // In Nushell 0.103.0, we need to use as_record() and then iterate through it
-            if let Ok(record) = value.as_record() {
-                for (k, v) in record.iter() {
-                    obj.insert(k.clone(), nu_value_to_json_value(v, span)?);
+pub fn convert_json_value_to_nu_value(
+    v: &serde_json::Value,
+    span: Span,
+) -> Result<Value, ShellError> {
+    let result = match v {
+        serde_json::Value::Null => Value::Nothing {
+            internal_span: span,
+        },
+        serde_json::Value::Bool(b) => Value::Bool {
+            val: *b,
+            internal_span: span,
+        },
+        serde_json::Value::Number(n) => {
+            if let Some(val) = n.as_i64() {
+                Value::Int {
+                    val,
+                    internal_span: span,
                 }
+            } else if let Some(val) = n.as_f64() {
+                Value::Float {
+                    val,
+                    internal_span: span,
+                }
+            } else {
+                return Err(crate::util::error::generic_error(
+                    format!(
+                        "Unexpected numeric value, cannot convert {} into i64 or f64",
+                        n
+                    ),
+                    None,
+                    None,
+                ));
+            }
+        }
+        serde_json::Value::String(val) => Value::String {
+            val: val.clone(),
+            internal_span: span,
+        },
+        serde_json::Value::Array(a) => {
+            let t = a
+                .iter()
+                .map(|x| convert_json_value_to_nu_value(x, span))
+                .collect::<Result<Vec<Value>, ShellError>>()?;
+            Value::List {
+                vals: t,
+                internal_span: span,
+            }
+        }
+        serde_json::Value::Object(o) => {
+            let mut cols = vec![];
+            let mut vals = vec![];
+
+            for (k, v) in o.iter() {
+                cols.push(k.clone());
+                vals.push(convert_json_value_to_nu_value(v, span)?);
             }
 
-            Ok(serde_json::Value::Object(obj))
-        }
-        Value::List { vals, .. } => {
-            let mut arr = Vec::new();
-
-            for v in vals {
-                arr.push(nu_value_to_json_value(v, span)?);
+            Value::Record {
+                val: nu_utils::SharedCow::new(
+                    Record::from_raw_cols_vals(cols, vals, span, span).unwrap(),
+                ),
+                internal_span: span,
             }
-
-            Ok(serde_json::Value::Array(arr))
         }
-        _ => Err(ShellError::GenericError {
-            error: "Unsupported value type".into(),
-            msg: format!("Cannot convert {:?} to JSON", value),
-            span: Some(span),
-            help: None,
-            inner: Vec::new(),
-        }),
-    }
+    };
+
+    Ok(result)
 }
 
-// Convert a serde_json::Value to a Nushell Value
-fn json_value_to_nu_value(json: &serde_json::Value, span: Span) -> Result<Value, ShellError> {
-    match json {
-        serde_json::Value::Null => Ok(Value::nothing(span)),
-        serde_json::Value::Bool(b) => Ok(Value::bool(*b, span)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(Value::int(i, span))
-            } else if let Some(f) = n.as_f64() {
-                Ok(Value::float(f, span))
+// Adapted from https://github.com/nushell/nushell/blob/main/crates/nu-command/src/commands/formats/to/json.rs
+pub fn convert_nu_value_to_json_value(
+    v: &Value,
+    span: Span,
+) -> Result<serde_json::Value, ShellError> {
+    Ok(match v {
+        Value::Bool { val, .. } => serde_json::Value::Bool(*val),
+        Value::Filesize { val, .. } => {
+            serde_json::Value::Number(serde_json::Number::from(val.get()))
+        }
+        Value::Duration { val, .. } => serde_json::Value::String(val.to_string()),
+        Value::Date { val, .. } => serde_json::Value::String(val.to_string()),
+        Value::Float { val, .. } => {
+            if let Some(num) = serde_json::Number::from_f64(*val) {
+                serde_json::Value::Number(num)
             } else {
-                Err(ShellError::GenericError {
-                    error: "Unsupported number type".into(),
-                    msg: format!("Cannot convert number {:?} to Nushell value", n),
-                    span: Some(span),
-                    help: None,
-                    inner: Vec::new(),
+                return Err(crate::util::error::generic_error(
+                    format!("Unexpected numeric value, cannot convert {} from f64", val),
+                    None,
+                    None,
+                ));
+            }
+        }
+        Value::Int { val, .. } => serde_json::Value::Number(serde_json::Number::from(*val)),
+        Value::Nothing { .. } => serde_json::Value::Null,
+        Value::String { val, .. } => serde_json::Value::String(val.clone()),
+        Value::CellPath { val, .. } => serde_json::Value::Array(
+            val.members
+                .iter()
+                .map(|x| match &x {
+                    PathMember::String { val, .. } => Ok(serde_json::Value::String(val.clone())),
+                    PathMember::Int { val, .. } => Ok(serde_json::Value::Number(
+                        serde_json::Number::from(*val as u64),
+                    )),
                 })
+                .collect::<Result<Vec<serde_json::Value>, ShellError>>()?,
+        ),
+        Value::List { vals, .. } => serde_json::Value::Array(json_list(vals, span)?),
+        Value::Error { error, .. } => return Err(*error.clone()),
+        Value::Binary { val, .. } => serde_json::Value::Array(
+            val.iter()
+                .map(|x| {
+                    Ok(serde_json::Value::Number(serde_json::Number::from(
+                        *x as u64,
+                    )))
+                })
+                .collect::<Result<Vec<serde_json::Value>, ShellError>>()?,
+        ),
+        Value::Record { val, .. } => {
+            let mut m = serde_json::Map::new();
+            for (k, v) in val.iter() {
+                m.insert(k.clone(), convert_nu_value_to_json_value(v, span)?);
             }
+            serde_json::Value::Object(m)
         }
-        serde_json::Value::String(s) => Ok(Value::string(s.clone(), span)),
-        serde_json::Value::Array(arr) => {
-            let mut values = Vec::new();
+        Value::Custom { .. } => serde_json::Value::Null,
+        Value::Range { .. } => serde_json::Value::Null,
+        Value::Closure { .. } => serde_json::Value::Null,
+        Value::Glob { val, .. } => serde_json::Value::String(val.clone()),
+    })
+}
 
-            for v in arr {
-                values.push(json_value_to_nu_value(v, span)?);
-            }
+fn json_list(input: &[Value], span: Span) -> Result<Vec<serde_json::Value>, ShellError> {
+    let mut out = vec![];
 
-            Ok(Value::list(values, span))
-        }
-        serde_json::Value::Object(obj) => {
-            // Create a Record to hold key-value pairs
-            let mut record = nu_protocol::Record::new();
-
-            for (k, v) in obj {
-                record.insert(k.clone(), json_value_to_nu_value(v, span)?);
-            }
-
-            // Use the current Nushell Value::record constructor
-            Ok(Value::record(record, span))
-        }
+    for value in input {
+        out.push(convert_nu_value_to_json_value(value, span)?);
     }
+
+    Ok(out)
 }

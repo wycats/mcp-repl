@@ -2423,6 +2423,7 @@ dependencies = [
  "nu-json",
  "nu-path",
  "nu-protocol",
+ "nu-utils",
  "once_cell",
  "rmcp",
  "serde_json",
