@@ -23,15 +23,15 @@ impl Command for ListResourcesCommand {
 
     fn run(
         &self,
-        _engine_state: &EngineState,
-        stack: &mut Stack,
+        engine_state: &EngineState,
+        _stack: &mut Stack,
         call: &nu_protocol::engine::Call<'_>,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         let span = call.head;
 
         // Try to get the MCP client from the utils
-        let client = match super::utils::get_mcp_client(stack) {
+        let client = match super::utils::get_mcp_client(engine_state) {
             Ok(client) => client,
             Err(err) => {
                 return Err(ShellError::GenericError {

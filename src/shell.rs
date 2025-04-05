@@ -48,6 +48,17 @@ impl McpRepl {
         // Setup a stack with essential environment variables
         let mut stack = Stack::new();
 
+        // Set MCP environment variables if present
+        if let Ok(url) = std::env::var("MCP_URL") {
+            stack.add_env_var("MCP_URL".to_string(), Value::string(url, Span::unknown()));
+        }
+        if let Ok(command) = std::env::var("MCP_COMMAND") {
+            stack.add_env_var(
+                "MCP_COMMAND".to_string(),
+                Value::string(command, Span::unknown()),
+            );
+        }
+
         // Set up minimal environment variables required for commands to work
         stack.add_env_var("PWD".into(), Value::string("/", Span::unknown()));
 
@@ -179,12 +190,8 @@ impl McpRepl {
     /// This allows commands to access the MCP client
     fn setup_mcp_client(&mut self) -> Result<()> {
         if let Some(mcp_client) = &self.mcp_client {
-            // Store the MCP client in the stack for command access
-            if let Err(e) =
-                crate::commands::utils::set_mcp_client(&mut self.stack, mcp_client.clone())
-            {
-                eprintln!("Warning: Failed to set MCP client in stack: {}", e);
-            }
+            // Store the MCP client in the engine state for command access
+            crate::commands::utils::set_mcp_client(&mut self.engine_state, mcp_client.clone());
         }
         Ok(())
     }

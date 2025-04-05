@@ -1,5 +1,5 @@
 use nu_engine::CallExt;
-use nu_json::value::ToJson;
+
 use nu_protocol::{
     Category, PipelineData, ShellError, Signature, Span, SyntaxShape, Value,
     engine::{Command, EngineState, Stack},
@@ -47,40 +47,28 @@ impl Command for CallToolCommand {
         let args = call.opt::<Value>(engine_state, stack, 1)?;
 
         // Convert args to serde_json::Value if present
-        let json_args = match args {
-            Some(val) => {
-                if let Ok(record) = val.as_record() {
-                    let mut map = serde_json::Map::new();
-
-                    for (k, v) in record.iter() {
-                        map.insert(k.clone(), nu_value_to_json_value(v, span)?);
-                    }
-
-                    Some(map)
-                } else {
-                    return Err(ShellError::GenericError {
-                        error: "Arguments must be a record".into(),
-                        msg: "Expected a record of key-value pairs".into(),
-                        span: Some(span),
-                        help: Some("Example: { key: value }".into()),
-                        inner: Vec::new(),
-                    });
+        let json_args = if let Some(args) = args {
+            if let Ok(record) = args.as_record() {
+                let mut map = serde_json::Map::new();
+                for (k, v) in record.iter() {
+                    map.insert(k.clone(), nu_value_to_json_value(v, span)?);
                 }
-            }
-            Some(_) => {
+                Some(map)
+            } else {
                 return Err(ShellError::GenericError {
                     error: "Arguments must be a record".into(),
-                    msg: "Expected a record of key-value pairs".into(),
+                    msg: format!("Got {} instead", args.get_type()),
                     span: Some(span),
-                    help: Some("Example: { key: value }".into()),
-                    inner: Vec::new(),
+                    help: None,
+                    inner: vec![],
                 });
             }
-            None => None,
+        } else {
+            None
         };
 
         // Try to get the MCP client from the utils
-        let client = match super::utils::get_mcp_client(stack) {
+        let client = match super::utils::get_mcp_client(engine_state) {
             Ok(client) => client,
             Err(err) => {
                 return Err(ShellError::GenericError {

@@ -1,4 +1,5 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
+use log::{debug, info, warn};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParam, ClientInfo, Content, Resource, ResourceTemplate, Tool},
@@ -6,7 +7,9 @@ use rmcp::{
     transport::TokioChildProcess,
 };
 use serde_json::Value;
+use shell_words;
 use std::borrow::Cow;
+use std::sync::Arc;
 use tokio::process::Command;
 
 /// Type of MCP connection to establish
@@ -19,7 +22,7 @@ pub enum McpConnectionType {
 
 /// Client for interacting with an MCP server
 pub struct McpClient {
-    client: RunningService<RoleClient, ClientInfo>,
+    client: Arc<RunningService<RoleClient, ClientInfo>>,
     tools: Vec<Tool>,
     resources: Vec<Resource>,
     templates: Vec<ResourceTemplate>,
@@ -30,38 +33,118 @@ impl McpClient {
     pub async fn connect(connection_type: McpConnectionType) -> Result<Self> {
         // Initialize the MCP client based on the connection type
         let client = match connection_type {
-            McpConnectionType::Sse(url) => Self::build_sse_client(&url).await?,
-            McpConnectionType::Command(cmd) => Self::build_command_client(&cmd).await?,
+            McpConnectionType::Sse(url) => {
+                info!("Connecting via SSE: {}", url);
+                Self::build_sse_client(&url).await?
+            }
+            McpConnectionType::Command(command) => {
+                info!("Connecting via command: {}", command);
+                Self::build_command_client(&command).await?
+            }
+        };
+
+        // Get server info and capabilities
+        let server_info = client.peer_info();
+        info!("Connected to server: {server_info:#?}");
+
+        let server_capabilities = &server_info.capabilities;
+        let has_tools = server_capabilities.tools.as_ref().is_some();
+        let has_resources = server_capabilities.resources.as_ref().is_some();
+
+        info!(
+            "Server capabilities - Tools: {}, Resources: {}",
+            has_tools, has_resources
+        );
+
+        // Load tools if supported
+        let tools = if has_tools {
+            match client.list_all_tools().await {
+                Ok(tools) => {
+                    info!("Loaded {} tools", tools.len());
+                    tools
+                }
+                Err(e) => {
+                    warn!("Failed to load tools: {}", e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Load resources if supported
+        let resources = if has_resources {
+            match client.list_all_resources().await {
+                Ok(resources) => {
+                    info!("Loaded {} resources", resources.len());
+                    resources
+                }
+                Err(e) => {
+                    warn!("Failed to load resources: {}", e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Load resource templates if supported
+        let templates = if has_resources {
+            match client.list_all_resource_templates().await {
+                Ok(templates) => {
+                    info!("Loaded {} templates", templates.len());
+                    templates
+                }
+                Err(e) => {
+                    warn!("Failed to load templates: {}", e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
         };
 
         // Create the client instance
-        let mut mcp_client = Self {
-            client,
-            tools: Vec::new(),
-            resources: Vec::new(),
-            templates: Vec::new(),
-        };
-
-        // Load initial data from the server
-        mcp_client.refresh_data().await?;
-
-        Ok(mcp_client)
+        Ok(Self {
+            client: Arc::new(client),
+            tools,
+            resources,
+            templates,
+        })
     }
 
     /// Build an SSE-based MCP client
     async fn build_sse_client(url: &str) -> Result<RunningService<RoleClient, ClientInfo>> {
-        let transport = rmcp::transport::SseTransport::start(url).await?;
+        let transport = rmcp::transport::SseTransport::start(url)
+            .await
+            .context("Failed to start SSE transport")?;
+
         let client_info = rmcp::model::ClientInfo::default();
-        let client = client_info.serve(transport).await?;
+        let client = client_info
+            .serve(transport)
+            .await
+            .context("Failed to initialize SSE client")?;
+
         Ok(client)
     }
 
     /// Build a command-based MCP client that launches a subprocess
-    async fn build_command_client(cmd_str: &str) -> Result<RunningService<RoleClient, ClientInfo>> {
-        let mut cmd = string_to_command(cmd_str);
-        let process = TokioChildProcess::new(&mut cmd)?;
+    async fn build_command_client(cmd: &str) -> Result<RunningService<RoleClient, ClientInfo>> {
+        let mut cmd = shell_words::split(cmd).context("Failed to parse command")?;
+
+        let program = cmd.remove(0);
+        let mut command = Command::new(program);
+        command.args(cmd);
+
+        let process =
+            TokioChildProcess::new(&mut command).context("Failed to start command process")?;
+
         let client_info = rmcp::model::ClientInfo::default();
-        let client = client_info.serve(process).await?;
+        let client = client_info
+            .serve(process)
+            .await
+            .context("Failed to initialize command client")?;
+
         Ok(client)
     }
 
@@ -135,24 +218,8 @@ impl McpClient {
                 arguments: params.as_object().cloned(),
             })
             .await
-            .map_err(|e| anyhow!("Failed to call tool: {}", e))?;
+            .context("Failed to call tool")?;
 
         Ok(result.content)
     }
-}
-
-/// Parse a command string into a Tokio Command
-fn string_to_command(cmd_str: &str) -> Command {
-    let parts: Vec<String> = shell_words::split(cmd_str)
-        .unwrap_or_else(|_| vec![cmd_str.to_string()])
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-
-    let mut cmd = Command::new(&parts[0]);
-    if parts.len() > 1 {
-        cmd.args(&parts[1..]);
-    }
-
-    cmd
 }

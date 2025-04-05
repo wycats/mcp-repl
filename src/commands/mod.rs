@@ -29,32 +29,22 @@ pub fn register_all(engine_state: &mut EngineState) {
 
 // Common utilities for commands
 pub(crate) mod utils {
+    use crate::engine::EngineStateExt;
     use crate::mcp::McpClient;
-    use anyhow::Result;
-    use nu_protocol::{Record, Span, Value, engine::Stack};
+    use nu_protocol::engine::EngineState;
+    use nu_protocol::{Record, Span, Value};
     use std::sync::Arc;
 
-    // Key used to store the MCP client in the environment variables
-    pub const MCP_CLIENT_ENV_VAR: &str = "MCP_CLIENT";
-
-    // Set the MCP client in the stack for access by commands
-    pub fn set_mcp_client(stack: &mut Stack, _client: Arc<McpClient>) -> Result<()> {
-        // In a real implementation, we should put this in a better place,
-        // but for now we'll store it in an environment variable on the stack
-        stack.add_env_var(
-            MCP_CLIENT_ENV_VAR.to_string(),
-            Value::string("mcp-client-present".to_string(), Span::new(0, 0)),
-        );
-        // Store the actual client in some global place accessible to commands
-        // For now, we'll just have a placeholder
-        Ok(())
+    // Set the MCP client for access by commands
+    pub fn set_mcp_client(engine_state: &mut EngineState, client: Arc<McpClient>) {
+        engine_state.set_mcp_client(client);
     }
 
-    // Get the MCP client from the stack
-    pub fn get_mcp_client(_stack: &Stack) -> Result<Arc<McpClient>, &'static str> {
-        // This would normally check if the MCP_CLIENT_ENV_VAR is set
-        // and then retrieve the client from some global store
-        Err("MCP client not available")
+    // Get the MCP client
+    pub fn get_mcp_client(engine_state: &EngineState) -> Result<Arc<McpClient>, &'static str> {
+        engine_state
+            .get_mcp_client()
+            .ok_or("MCP client not available")
     }
 
     // Helper to convert string map to Record

@@ -9,7 +9,7 @@ description = "A Nushell-based REPL for MCP (Model Context Protocol)"
 
 # Other dependencies
 anyhow = "1.0"
-clap = { version = "4.3", features = ["derive"] }
+clap = { version = "4.3", features = ["derive", "env"] }
 env_logger = "0.11.8"
 log = "0.4"
 # Nushell core dependencies - use a known compatible set of versions
@@ -34,3 +34,4 @@ rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", package = "rm
 serde_json = { version = "1.0.140" }
 tokio = { version = "1.28", features = ["rt-multi-thread"] }
 shell-words = "1.1.0"
+once_cell = "1.19.0"
