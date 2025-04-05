@@ -5,6 +5,7 @@ pub mod builtin;
 pub mod call_tool;
 pub mod help;
 pub mod list_tools;
+// pub mod tool;
 pub mod utils;
 
 use call_tool::CallToolCommand;
