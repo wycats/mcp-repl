@@ -1,5 +1,6 @@
 use nu_protocol::{IntoPipelineData, PipelineData, Span, Value};
 pub mod error;
+pub mod format;
 #[derive(Clone, Debug, Default)]
 pub struct NuValueMap {
     cols: Vec<String>,

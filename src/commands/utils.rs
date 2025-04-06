@@ -5,19 +5,34 @@ use nu_protocol::{
     engine::{Command, EngineState, StateWorkingSet},
 };
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 
 use crate::engine::EngineStateExt;
 use crate::mcp::McpClient;
 
+pub struct ReplClient {
+    pub(crate) name: String,
+    pub(crate) client: McpClient,
+    pub(crate) debug: bool,
+}
+
+impl Deref for ReplClient {
+    type Target = McpClient;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
+}
+
 /// Set the MCP client in the engine state
-pub fn set_mcp_client(engine_state: &mut EngineState, client: Arc<McpClient>) {
+pub fn set_mcp_client(engine_state: &mut EngineState, client: Arc<ReplClient>) {
     engine_state.set_mcp_client(client);
 }
 
 /// Get the MCP client from the engine state
-pub fn get_mcp_client(engine_state: &EngineState) -> Result<Arc<McpClient>> {
+pub fn get_mcp_client(engine_state: &EngineState) -> Result<Arc<ReplClient>> {
     engine_state
         .get_mcp_client()
         .ok_or_else(|| anyhow::anyhow!("MCP client not found in engine state"))

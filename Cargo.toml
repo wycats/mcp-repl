@@ -21,6 +21,8 @@ nu-engine = { version = "0.103.0", default-features = false }
 nu-json = { version = "0.103.0", default-features = false }
 nu-path = { version = "0.103.0", default-features = false }
 nu-protocol = "0.103.0"
+nu-table = "0.103.0"
+nu-color-config = "0.103.0"
 nu-utils = "0.103.0"
 zip = "=2.5.0"
 

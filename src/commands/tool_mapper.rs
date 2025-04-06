@@ -195,7 +195,7 @@ pub fn map_call_args_to_tool_params(
         
         // First, process positional arguments
         let mut positional_idx = 0;
-        for (param_name, param_schema) in &prop_vec {
+        for (param_name, _param_schema) in &prop_vec {
             // Check if this is a required parameter (likely to be positional)
             let is_required = is_parameter_required(tool, param_name).unwrap_or(false);
             

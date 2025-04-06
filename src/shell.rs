@@ -1,5 +1,5 @@
 use crate::commands::help::McpHelpCommand;
-use crate::mcp::McpClient;
+use crate::commands::utils::ReplClient;
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use nu_cmd_lang::create_default_context;
@@ -25,12 +25,12 @@ pub struct McpRepl {
     /// Nushell stack
     stack: Stack,
     /// MCP client (if available)
-    mcp_client: Option<Arc<McpClient>>,
+    mcp_client: Option<Arc<ReplClient>>,
 }
 
 impl McpRepl {
     /// Create a new MCP REPL instance
-    pub fn new(mcp_client: Option<Arc<McpClient>>, runtime: Arc<Runtime>) -> Result<Self> {
+    pub fn new(mcp_client: Option<Arc<ReplClient>>, runtime: Arc<Runtime>) -> Result<Self> {
         // Initialize a clean Nushell engine with default commands
         let mut engine_state = create_default_context();
 
@@ -117,7 +117,7 @@ impl McpRepl {
     }
 
     /// Set the MCP client for this REPL
-    pub fn with_mcp_client(mut self, client: Arc<McpClient>) -> Self {
+    pub fn with_mcp_client(mut self, client: Arc<ReplClient>) -> Self {
         self.mcp_client = Some(client);
         self
     }
@@ -220,10 +220,11 @@ impl McpRepl {
             // Store the MCP client in the engine state for command access
             log::info!("Setting MCP client in engine state");
             crate::commands::utils::set_mcp_client(&mut self.engine_state, mcp_client.clone());
-            
+
             // Now that we have a client, register MCP tools as dynamic commands
             log::info!("Registering MCP tools as dynamic commands after client initialization");
-            if let Err(err) = crate::commands::mcp_tools::register_mcp_tools(&mut self.engine_state) {
+            if let Err(err) = crate::commands::mcp_tools::register_mcp_tools(&mut self.engine_state)
+            {
                 log::warn!("Failed to register MCP tools as dynamic commands: {}", err);
             } else {
                 log::info!("Successfully registered MCP tools as dynamic commands");
@@ -241,7 +242,7 @@ impl McpRepl {
     }
 
     /// Get a reference to the MCP client
-    pub fn mcp_client(&self) -> Option<&Arc<McpClient>> {
+    pub fn mcp_client(&self) -> Option<&Arc<ReplClient>> {
         self.mcp_client.as_ref()
     }
 

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use log::{debug, info, warn};
+use log::{info, warn};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParam, ClientInfo, Content, Resource, ResourceTemplate, Tool},
@@ -26,11 +26,12 @@ pub struct McpClient {
     tools: Vec<Tool>,
     resources: Vec<Resource>,
     templates: Vec<ResourceTemplate>,
+    debug: bool,
 }
 
 impl McpClient {
     /// Create a new MCP client with the specified connection type
-    pub async fn connect(connection_type: McpConnectionType) -> Result<Self> {
+    pub async fn connect(connection_type: McpConnectionType, debug: bool) -> Result<Self> {
         // Initialize the MCP client based on the connection type
         let client = match connection_type {
             McpConnectionType::Sse(url) => {
@@ -107,6 +108,7 @@ impl McpClient {
         // Create the client instance
         Ok(Self {
             client: Arc::new(client),
+            debug,
             tools,
             resources,
             templates,
@@ -210,6 +212,19 @@ impl McpClient {
             .find(|t| t.name == tool_name)
             .ok_or_else(|| anyhow!("Tool not found: {}", tool_name))?;
 
+        // Log the request if debug is enabled
+        if self.debug {
+            // Use Nushell formatting for the request parameters
+            let span = nu_protocol::Span::new(0, 0); // Create a dummy span
+            let nu_formatted = crate::util::format::format_json_as_nu(&params, span);
+            
+            info!(
+                "MCP REQUEST to '{}':\n{}",
+                tool_name,
+                nu_formatted
+            );
+        }
+
         // Call the tool with the parameters
         let result = self
             .client
@@ -219,6 +234,20 @@ impl McpClient {
             })
             .await
             .context("Failed to call tool")?;
+
+        // Log the response if debug is enabled
+        if self.debug {
+            // Use Nushell formatting for the response
+            let span = nu_protocol::Span::new(0, 0); // Create a dummy span
+            let response_value = serde_json::to_value(&result).unwrap_or_default();
+            let nu_formatted = crate::util::format::format_json_as_nu(&response_value, span);
+            
+            info!(
+                "MCP RESPONSE from '{}':\n{}",
+                tool_name,
+                nu_formatted
+            );
+        }
 
         Ok(result.content)
     }

@@ -6,8 +6,6 @@ use nu_protocol::{
 };
 use rmcp::model::Tool;
 use serde_json::Value as JsonValue;
-use std::sync::mpsc;
-use std::thread;
 use tokio::runtime::Runtime;
 
 use super::tool::register_dynamic_tool;
@@ -15,26 +13,39 @@ use super::tool_mapper;
 
 /// Register all MCP tools as Nushell commands
 pub fn register_mcp_tools(engine_state: &mut EngineState) -> Result<()> {
-    // Get the MCP client from the engine state
-    let client = super::utils::get_mcp_client(engine_state)
-        .context("Failed to get MCP client when registering tools")?;
+    // Get the MCP client from engine state
+    let client = super::utils::get_mcp_client(engine_state)?;
+
+    // Determine the MCP identifier/namespace
+    // For now, we'll use a hardcoded "fs" for the filesystem MCP
+    // In the future, this should be determined dynamically from the MCP connection
+    let mcp_namespace = "fs"; // Default namespace for now
 
     let tools = client.get_tools();
-    info!("Registering {} MCP tools as Nushell commands", tools.len());
+    info!(
+        "Registering {} MCP tools under namespace '{}'",
+        tools.len(),
+        mcp_namespace
+    );
 
     for tool in tools {
-        register_mcp_tool(engine_state, &tool)?;
+        register_mcp_tool(engine_state, &tool, mcp_namespace)?;
     }
 
     Ok(())
 }
 
 /// Register a single MCP tool as a Nushell command
-fn register_mcp_tool(engine_state: &mut EngineState, tool: &Tool) -> Result<()> {
+fn register_mcp_tool(
+    engine_state: &mut EngineState,
+    tool: &Tool,
+    mcp_namespace: &str,
+) -> Result<()> {
     let tool_name = tool.name.to_string();
-    info!("Registering MCP tool: {}", tool_name);
+    info!("Registering MCP tool: {}.{}", mcp_namespace, tool_name);
 
     // Map the MCP tool to a Nushell signature
+    // Use "tool" as the category for all MCP tools
     let signature = tool_mapper::map_tool_to_signature(tool, "tool")
         .context(format!("Failed to map tool '{}' to signature", tool_name))?;
 
@@ -44,19 +55,15 @@ fn register_mcp_tool(engine_state: &mut EngineState, tool: &Tool) -> Result<()> 
     // Create a run function that will call the tool when the command is invoked
     let run_fn = create_tool_run_function(tool.clone());
 
-    // Register the tool as a dynamic command
-    // We use the "tool" prefix to namespace MCP tools
-    register_dynamic_tool(
-        engine_state,
-        &format!("tool {}", tool_name), // Namespace under "tool"
-        signature,
-        description,
-        run_fn,
-    )
-    .context(format!(
-        "Failed to register dynamic tool command: {}",
-        tool_name
-    ))?;
+    // Create the namespaced command name
+    // Format: "tool mcp_namespace.tool_name"
+    let namespaced_tool_name = format!("{}.{}", mcp_namespace, tool_name);
+    let command_name = format!("tool {}", namespaced_tool_name);
+
+    // Register the tool as a dynamic command with the namespaced identifier
+    register_dynamic_tool(engine_state, &command_name, signature, description, run_fn).context(
+        format!("Failed to register dynamic tool command: {}", command_name),
+    )?;
 
     Ok(())
 }
@@ -134,8 +141,10 @@ fn create_tool_run_function(
             };
 
             // Execute the async call in the new runtime
-            let result =
-                rt.block_on(async { client_clone.call_tool(&tool_name_clone, args_json).await });
+            let result = rt.block_on(async {
+                // Pass the debug flag from the ReplClient
+                client_clone.call_tool(&tool_name_clone, args_json).await
+            });
 
             // Send the result back through the channel
             let _ = sender.send(result);
