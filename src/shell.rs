@@ -218,7 +218,16 @@ impl McpRepl {
     fn setup_mcp_client(&mut self) -> Result<()> {
         if let Some(mcp_client) = &self.mcp_client {
             // Store the MCP client in the engine state for command access
+            log::info!("Setting MCP client in engine state");
             crate::commands::utils::set_mcp_client(&mut self.engine_state, mcp_client.clone());
+            
+            // Now that we have a client, register MCP tools as dynamic commands
+            log::info!("Registering MCP tools as dynamic commands after client initialization");
+            if let Err(err) = crate::commands::mcp_tools::register_mcp_tools(&mut self.engine_state) {
+                log::warn!("Failed to register MCP tools as dynamic commands: {}", err);
+            } else {
+                log::info!("Successfully registered MCP tools as dynamic commands");
+            }
         }
 
         // Register our test dynamic commands as a prototype

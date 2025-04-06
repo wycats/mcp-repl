@@ -1,6 +1,6 @@
 use nu_engine::CallExt;
 use nu_protocol::{
-    Category, PipelineData, ShellError, Signature, SyntaxShape, Value,
+    Category, PipelineData, ShellError, Signature, Value,
     engine::{Command, EngineState, Stack},
 };
 

@@ -6,7 +6,6 @@ use nu_protocol::{
     engine::{Command, EngineState, Stack},
 };
 use rmcp::model::RawContent;
-use serde_json::json;
 
 /// Call an MCP tool command
 #[derive(Clone)]

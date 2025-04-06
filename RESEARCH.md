@@ -85,6 +85,160 @@ Here's how we'll implement it:
 
 ### 1. Tool-Specific Command Structure
 
+We'll create a specialized command structure that represents an MCP tool as a Nushell command:
+
+```rust
+#[derive(Clone)]
+pub struct DynamicToolCommand {
+    tool: Tool,
+    // Use the same MCP client reference pattern that's stored in the engine state
+    client: Arc<Mutex<Option<McpClient>>>,
+}
+
+impl DynamicToolCommand {
+    pub fn new(tool: Tool, client: Arc<Mutex<Option<McpClient>>>) -> Self {
+        Self { tool, client }
+    }
+}
+```
+
+This command structure will store:
+- The MCP tool metadata (from the MCP client)
+- A reference to the MCP client (from the engine state)
+
+### 2. Command Implementation
+
+Implement the `Command` trait for this structure, converting the tool's schema into a proper Nushell signature:
+
+```rust
+impl Command for DynamicToolCommand {
+    fn name(&self) -> &str {
+        &self.tool.name
+    }
+    
+    fn signature(&self) -> Signature {
+        let mut sig = Signature::build(&self.tool.name)
+            .category(Category::Custom("mcp".into()))
+            .input_output_types(vec![(Type::Any, Type::Any)]);
+            
+        // Add parameters based on the tool's schema
+        if let Some(schema) = &self.tool.schema {
+            if let Some(properties) = schema.get("properties") {
+                if let Some(obj) = properties.as_object() {
+                    let required = schema.get("required")
+                        .and_then(|r| r.as_array())
+                        .map(|arr| arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>())
+                        .unwrap_or_default();
+                        
+                    for (name, prop_schema) in obj {
+                        let is_required = required.contains(&name.as_str());
+                        let (shape, desc, default) = parse_parameter_schema(prop_schema);
+                        
+                        if is_required {
+                            sig = sig.required(name, shape, &desc);
+                        } else {
+                            sig = sig.optional(name, shape, &desc, default.as_ref());
+                        }
+                    }
+                }
+            }
+        }
+        
+        sig
+    }
+    
+    fn usage(&self) -> &str {
+        self.tool.description.as_deref().unwrap_or("MCP tool")
+    }
+    
+    fn run(
+        &self,
+        engine_state: &EngineState,
+        stack: &mut Stack,
+        call: &Call,
+        _input: PipelineData,
+    ) -> Result<PipelineData, ShellError> {
+        // Extract arguments based on the signature
+        let args = extract_arguments_from_call(&self.tool, call, engine_state, stack)?;
+        
+        // Create runtime for async operations
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ShellError::GenericError {
+                error: "Failed to create runtime".into(),
+                msg: e.to_string(),
+                span: Some(call.head),
+                help: None,
+                inner: Vec::new(),
+            })?;
+        
+        // Call the tool with the extracted arguments
+        let result = runtime.block_on(async {
+            let client_guard = self.client.lock().map_err(|_| {
+                ShellError::GenericError {
+                    error: "Failed to lock MCP client".into(),
+                    msg: "Internal synchronization error".into(),
+                    span: Some(call.head),
+                    help: None,
+                    inner: Vec::new(),
+                }
+            })?;
+            
+            match &*client_guard {
+                Some(client) => client.call_tool(&self.tool.name, args).await,
+                None => Err(ShellError::GenericError {
+                    error: "MCP client not connected".into(),
+                    msg: "MCP client is not initialized".into(),
+                    span: Some(call.head),
+                    help: Some("Connect to an MCP server first".into()),
+                    inner: Vec::new(),
+                }),
+            }
+        })?;
+        
+        // Process and return the result
+        process_tool_result(result, call.head)
+    }
+}
+```
+
+### 3. Schema to Parameter Conversion
+
+We'll need helper functions to convert JSON schema properties to Nushell parameter shapes:
+
+```rust
+// Parse a JSON schema property into a Nushell parameter
+fn parse_parameter_schema(schema: &Value) -> (SyntaxShape, String, Option<Value>) {
+    // Extract type information
+    let shape = match schema.get("type").and_then(|t| t.as_str()) {
+        Some("string") => SyntaxShape::String,
+        Some("number") | Some("integer") => SyntaxShape::Number,
+        Some("boolean") => SyntaxShape::Boolean,
+        Some("array") => SyntaxShape::List(Box::new(SyntaxShape::Any)),
+        Some("object") => SyntaxShape::Record(vec![]),
+        _ => SyntaxShape::Any,
+    };
+    
+    // Extract description
+    let description = schema
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string();
+    
+    // Extract default value
+    let default = schema.get("default")
+        .map(|v| json_value_to_nu_value(v, Span::unknown()));
+    
+    (shape, description, default)
+}
+```
+
+### 4. Tool Registration Management
+
 Next, we need to implement the mechanism for registering and refreshing tool commands in the engine state. Similar to how we store the MCP client in the engine state, we'll need to store and track the registered tools:
 
 ```rust
