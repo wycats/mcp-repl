@@ -8,34 +8,118 @@ use rmcp::model::Tool;
 use serde_json::Value as JsonValue;
 
 /// Maps an MCP tool to a Nushell command signature
+/// Following the mapping strategy in MAPPING.md:
+/// 1. If the tool has one or two required parameters, map them onto positional arguments.
+/// 2. Optional parameters that are booleans should be mapped to switches.
+/// 3. All other optional parameters should be mapped to flags.
+/// 4. If the tool has more than two required parameters, the remaining parameters should be mapped to required flags.
 pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
     let name = tool.name.to_string();
+
+    // DEBUG: Output the raw schema for inspection
+    eprintln!("DEBUG: Tool {} schema: {:?}", name, tool.input_schema);
+
     let mut signature =
         Signature::build(name.clone()).category(Category::Custom(category.to_string()));
 
-    // Handle schema parameters
+    // Get all schema properties
     if let Some(schema_props) = get_schema_properties(tool) {
-        for (param_name, param_schema) in schema_props {
-            // Determine if parameter is required
-            let is_required = is_parameter_required(tool, &param_name)?;
+        // DEBUG: Output the properties we found
+        eprintln!(
+            "DEBUG: Properties for tool {}: {:?}",
+            name,
+            schema_props.keys().collect::<Vec<_>>()
+        );
+
+        // Convert properties to vec for sorting
+        let prop_vec: Vec<(String, JsonValue)> = schema_props.into_iter().collect();
+
+        // Identify required parameters
+        let required_params: Vec<(String, JsonValue)> = prop_vec
+            .iter()
+            .filter(|(name, _)| is_parameter_required(tool, name).unwrap_or(false))
+            .map(|(name, schema)| (name.clone(), schema.clone()))
+            .collect();
+
+        // Determine how many required parameters to map as positional (max 2)
+        let positional_count = required_params.len().min(2);
+
+        // Process positional parameters first (limited to first 2 required ones)
+        for i in 0..positional_count {
+            let (param_name, param_schema) = &required_params[i];
 
             // Get parameter description
+            let description = get_parameter_description(param_schema)
+                .unwrap_or_else(|| format!("{} parameter", param_name));
+
+            // Determine parameter type/shape
+            let syntax_shape = map_json_schema_to_syntax_shape(param_schema)?;
+
+            // Add as required positional parameter
+            signature = signature.required(param_name.clone(), syntax_shape, description);
+        }
+
+        // Process remaining parameters as flags
+        for (param_name, param_schema) in prop_vec {
+            // Skip parameters we've already processed as positional
+            if positional_count > 0
+                && required_params
+                    .iter()
+                    .take(positional_count)
+                    .any(|(name, _)| name == &param_name)
+            {
+                continue;
+            }
+
+            // Get parameter description with better fallback
             let description = get_parameter_description(&param_schema)
+                .or_else(|| {
+                    // If no description found, extract useful information from schema
+                    extract_useful_schema_info(&param_schema, &param_name)
+                })
                 .unwrap_or_else(|| format!("{} parameter", param_name));
 
             // Determine parameter type/shape
             let syntax_shape = map_json_schema_to_syntax_shape(&param_schema)?;
 
-            // Add parameter to signature
-            if is_required {
-                signature = signature.required(param_name, syntax_shape, description);
+            // Determine if parameter is required
+            let is_required = is_parameter_required(tool, &param_name)?;
+
+            // Handle boolean parameters as switches if optional
+            if !is_required && is_boolean_parameter(&param_schema) {
+                // For boolean optional parameters, use switch (--param_name with no value)
+                signature = signature.switch(param_name.clone(), description, None);
+            } else if is_required {
+                // For required parameters beyond the first 2, use flags with named parameters
+                signature = signature.named(
+                    param_name.clone(),
+                    syntax_shape,
+                    description,
+                    None, // No short flag
+                );
             } else {
-                signature = signature.optional(param_name, syntax_shape, description);
+                // Optional non-boolean - add as optional flag with named parameters
+                signature = signature.named(
+                    param_name.clone(),
+                    syntax_shape,
+                    description,
+                    None, // No short flag
+                );
             }
         }
     }
 
     Ok(signature)
+}
+
+/// Check if a parameter is a boolean type
+fn is_boolean_parameter(param_schema: &JsonValue) -> bool {
+    if let JsonValue::Object(obj) = param_schema {
+        if let Some(JsonValue::String(type_str)) = obj.get("type") {
+            return type_str == "boolean";
+        }
+    }
+    false
 }
 
 /// Get properties from a JSON Schema
@@ -73,8 +157,69 @@ fn is_parameter_required(tool: &Tool, param_name: &str) -> Result<bool> {
 /// Extract description from a parameter schema
 fn get_parameter_description(param_schema: &JsonValue) -> Option<String> {
     if let JsonValue::Object(obj) = param_schema {
+        // First try to get the description directly
         if let Some(JsonValue::String(desc)) = obj.get("description") {
             return Some(desc.clone());
+        }
+    }
+
+    // If we don't find a description, return None and let the caller handle the fallback
+    None
+}
+
+/// Extract useful information from the schema when no description is available
+fn extract_useful_schema_info(param_schema: &JsonValue, param_name: &str) -> Option<String> {
+    if let JsonValue::Object(obj) = param_schema {
+        // Check if we have enum values (choices) - this should be highest priority
+        if let Some(JsonValue::Array(enum_values)) = obj.get("enum") {
+            let values: Vec<String> = enum_values
+                .iter()
+                .filter_map(|v| {
+                    if let JsonValue::String(s) = v {
+                        Some(format!("\"{}\"" , s.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !values.is_empty() {
+                return Some(format!("Valid values: {}", values.join(", ")));
+            }
+        }
+
+        // Check if we have format information
+        if let Some(JsonValue::String(format)) = obj.get("format") {
+            return Some(format!("{} in {} format", param_name, format));
+        }
+
+        // Check for pattern (regex)
+        if let Some(JsonValue::String(pattern)) = obj.get("pattern") {
+            return Some(format!("Must match pattern: {}", pattern));
+        }
+
+        // Check for min/max constraints
+        let mut constraints = Vec::new();
+
+        if let Some(JsonValue::Number(min)) = obj.get("minimum") {
+            constraints.push(format!("min: {}", min));
+        }
+
+        if let Some(JsonValue::Number(max)) = obj.get("maximum") {
+            constraints.push(format!("max: {}", max));
+        }
+
+        if !constraints.is_empty() {
+            return Some(format!("Constraints: {}", constraints.join(", ")));
+        }
+
+        // Check if it's an object and describe its structure
+        if let Some(JsonValue::String(type_str)) = obj.get("type") {
+            if type_str == "object" {
+                return Some("JSON object parameter".to_string());
+            } else if type_str == "array" {
+                return Some("List of values".to_string());
+            }
         }
     }
 
@@ -90,7 +235,10 @@ fn map_json_schema_to_syntax_shape(param_schema: &JsonValue) -> Result<SyntaxSha
                 "string" => {
                     // Check if it's an enum
                     if obj.contains_key("enum") {
-                        return Ok(SyntaxShape::String); // For enums, we still use string shape
+                        // Use String for enums
+                        // The parameter description will include detailed information
+                        // about valid values for better documentation
+                        return Ok(SyntaxShape::String);
                     }
 
                     // Check for format specifiers
@@ -173,6 +321,11 @@ pub fn generate_input_output_types(_tool: &Tool) -> Vec<(Type, Type)> {
 }
 
 /// Map Nushell values to JSON values for tool parameters
+/// Following the mapping strategy in MAPPING.md:
+/// 1. If the tool has one or two required parameters, map them onto positional arguments.
+/// 2. Optional parameters that are booleans should be mapped to switches.
+/// 3. All other optional parameters should be mapped to flags.
+/// 4. If the tool has more than two required parameters, the remaining parameters should be mapped to required flags.
 pub fn map_call_args_to_tool_params(
     engine_state: &EngineState,
     stack: &mut Stack,
@@ -181,50 +334,67 @@ pub fn map_call_args_to_tool_params(
 ) -> Result<serde_json::Map<String, JsonValue>> {
     let mut params = serde_json::Map::new();
     let span = call.head;
-    
+
     // Get schema properties from the tool
     if let Some(properties) = get_schema_properties(tool) {
         let mut prop_vec: Vec<(String, JsonValue)> = properties.into_iter().collect();
-        
+
         // Sort properties so required ones are first (helps with positional args mapping)
         prop_vec.sort_by(|(name1, _), (name2, _)| {
             let req1 = is_parameter_required(tool, name1).unwrap_or(false);
             let req2 = is_parameter_required(tool, name2).unwrap_or(false);
             req2.cmp(&req1) // required first
         });
-        
-        // First, process positional arguments
-        let mut positional_idx = 0;
-        for (param_name, _param_schema) in &prop_vec {
-            // Check if this is a required parameter (likely to be positional)
-            let is_required = is_parameter_required(tool, param_name).unwrap_or(false);
-            
-            // If this is a required parameter, try to get it as a positional argument
-            if is_required {
-                // For positional arguments, we use the CallExt trait methods like req/opt
-                // For the first argument, use index 0, second argument index 1, etc.
-                let value_result = match positional_idx {
-                    0 => call.opt(engine_state, stack, 0),
-                    1 => call.opt(engine_state, stack, 1),
-                    2 => call.opt(engine_state, stack, 2),
-                    _ => Ok(None), // Support up to 3 positional arguments for now
-                };
-                
-                if let Ok(Some(value)) = value_result {
-                    let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
-                    params.insert(param_name.clone(), json_value);
-                    positional_idx += 1;
-                    continue; // Skip to next parameter
-                }
+
+        // Get required parameters
+        let required_params: Vec<(String, JsonValue)> = prop_vec
+            .iter()
+            .filter(|(name, _)| is_parameter_required(tool, name).unwrap_or(false))
+            .map(|(name, schema)| (name.clone(), schema.clone()))
+            .collect();
+
+        // Determine how many required parameters to map as positional
+        // (maximum of 2 as per MAPPING.md)
+        let positional_count = required_params.len().min(2);
+
+        // Process positional parameters (limited to first 2 required ones)
+        for i in 0..positional_count {
+            let (param_name, _) = &required_params[i];
+
+            // Try to get it as a positional argument
+            let value_result = match i {
+                0 => call.opt(engine_state, stack, 0),
+                1 => call.opt(engine_state, stack, 1),
+                _ => unreachable!(), // We limited to 2 above
+            };
+
+            if let Ok(Some(value)) = value_result {
+                let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
+                params.insert(param_name.clone(), json_value);
+                continue; // Skip to next parameter
             }
-            
-            // Try to get the parameter from flags
+
+            // If not found as positional, try as flag (fallback)
+            if let Some(value) = call.get_flag(engine_state, stack, param_name)? {
+                let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
+                params.insert(param_name.clone(), json_value);
+            }
+        }
+
+        // Process all parameters (including the remaining required ones) as flags
+        for (param_name, _) in &prop_vec {
+            // Skip parameters we've already processed as positional arguments
+            if params.contains_key(param_name) {
+                continue;
+            }
+
+            // Process remaining parameters as flags
             if let Some(value) = call.get_flag(engine_state, stack, param_name)? {
                 let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
                 params.insert(param_name.clone(), json_value);
             }
         }
     }
-    
+
     Ok(params)
 }

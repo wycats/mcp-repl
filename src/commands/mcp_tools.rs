@@ -19,7 +19,7 @@ pub fn register_mcp_tools(engine_state: &mut EngineState) -> Result<()> {
     // Determine the MCP identifier/namespace
     // For now, we'll use a hardcoded "fs" for the filesystem MCP
     // In the future, this should be determined dynamically from the MCP connection
-    let mcp_namespace = "fs"; // Default namespace for now
+    let mcp_namespace = client.name.as_str(); // Default namespace for now
 
     let tools = client.get_tools();
     info!(
