@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 resolver = "3"
 description = "A Nushell-based REPL for MCP (Model Context Protocol)"
-repository = "https://github.com/wycats/nu-mcp-repl"
+repository = "https://github.com/wycats/mcp-repl"
 
 [dependencies]
 
