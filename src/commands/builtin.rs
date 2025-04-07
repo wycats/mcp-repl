@@ -1,3 +1,4 @@
+use log::warn;
 use nu_command::*;
 use nu_protocol::engine::{EngineState, StateWorkingSet};
 
@@ -19,6 +20,17 @@ pub fn add_shell_command_context(mut engine_state: EngineState) -> EngineState {
         // Charts
         bind_command! {
             Histogram
+        }
+
+        bind_command! {
+            Http,
+            HttpGet,
+            HttpPost,
+            HttpPut,
+            HttpDelete,
+            HttpPatch,
+            HttpHead,
+            HttpOptions,
         }
 
         // Filters
@@ -366,7 +378,7 @@ pub fn add_shell_command_context(mut engine_state: EngineState) -> EngineState {
     };
 
     if let Err(err) = engine_state.merge_delta(delta) {
-        eprintln!("Error creating default context: {err:?}");
+        warn!("Error creating default context: {err:?}");
     }
 
     // Cache the table decl id so we don't have to look it up later

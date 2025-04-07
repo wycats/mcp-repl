@@ -56,11 +56,14 @@ impl Command for TestDynamicCommand {
 }
 
 pub mod dynamic_tool_commands {
-    use nu_protocol::IntoPipelineData;
+    use anyhow::Result;
+    use nu_protocol::{
+        IntoPipelineData, PipelineData, ShellError, Span, Value,
+        engine::{Call, EngineState, Stack},
+    };
 
-    use crate::commands::utils::get_command_registry;
-
-    use super::*;
+    use crate::{commands::utils::get_command_registry, util::format::json_to_nu_result};
+    use crate::{engine::EngineStateExt, util::format::json_to_nu};
 
     /// Execute a dynamic command with the given name, supporting namespaced commands
     pub fn execute_dynamic_command(
@@ -138,55 +141,62 @@ pub mod dynamic_tool_commands {
     pub fn list_tool_commands(
         engine_state: &EngineState,
         call: &Call,
+        protocol: Option<Span>,
     ) -> Result<PipelineData, ShellError> {
-        match get_command_registry() {
-            Ok(registry) => {
-                if let Ok(registry_guard) = registry.lock() {
-                    let commands = registry_guard.get_command_names();
-                    let mut values = Vec::new();
+        // Get the registered tools from the MCP client manager
+        let client_manager = engine_state.get_mcp_client_manager();
+        let servers = client_manager.get_servers();
 
-                    // Create record for each tool command (that starts with "tool ")
-                    for (idx, name) in commands.iter().enumerate() {
-                        if name.starts_with("tool ") {
-                            if let Some(cmd_info) = registry_guard.get_command_info(name) {
-                                // Get the declaration by ID
-                                let decl = engine_state.get_decl(cmd_info.decl_id);
-                                let mut record = nu_protocol::Record::new();
-                                record.push("#", Value::int(idx as i64, call.head));
+        let mut values = Vec::new();
+        let mut idx = 0;
 
-                                // Display the subcommand part (without the "tool " prefix)
-                                let subcommand = name.strip_prefix("tool ").unwrap_or(name);
-                                record.push("name", Value::string(subcommand, call.head));
-                                record.push(
-                                    "description",
-                                    Value::string(decl.description(), call.head),
-                                );
-                                record.push("category", Value::string("tool", call.head));
+        // Create a record for each registered tool
+        for (client_name, server) in servers.iter() {
+            for (tool_name, registered_tool) in server.tools.iter() {
+                let tool = &registered_tool.tool;
+                let mut record = nu_protocol::Record::new();
 
-                                values.push(Value::record(record, call.head));
-                            }
-                        }
-                    }
+                record.push("#", Value::int(idx as i64, call.head));
+                idx += 1;
 
-                    Ok(Value::list(values, call.head).into_pipeline_data())
+                // Add the client name for filtering/grouping
+                record.push("client", Value::string(client_name.clone(), call.head));
+
+                // The fully qualified tool name (client.tool format)
+                record.push("name", Value::string(tool_name, call.head));
+
+                // Add description if available
+                if let Some(desc) = &tool.description {
+                    record.push("description", Value::string(desc.clone(), call.head));
                 } else {
-                    Err(ShellError::GenericError {
-                        error: "Registry lock failed".into(),
-                        msg: "Could not access the dynamic command registry".into(),
-                        span: Some(call.head),
-                        help: None,
-                        inner: vec![],
-                    })
+                    record.push("description", Value::string("", call.head));
                 }
+
+                if let Some(protocol) = protocol {
+                    record.push(
+                        "protocol",
+                        json_to_nu(&tool.schema_as_json_value(), Some(protocol)),
+                    );
+                }
+
+                values.push(Value::record(record, call.head));
             }
-            Err(e) => Err(ShellError::GenericError {
-                error: "Registry error".into(),
-                msg: e.to_string(),
-                span: Some(call.head),
-                help: None,
-                inner: vec![],
-            }),
         }
+
+        if values.is_empty() {
+            // Add a message when no tools are found
+            let mut record = nu_protocol::Record::new();
+            record.push(
+                "message",
+                Value::string(
+                    "No registered MCP tools found. Try connecting to an MCP server first.",
+                    call.head,
+                ),
+            );
+            values.push(Value::record(record, call.head));
+        }
+
+        Ok(Value::list(values, call.head).into_pipeline_data())
     }
 }
 

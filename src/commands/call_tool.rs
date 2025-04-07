@@ -70,9 +70,9 @@ impl Command for CallToolCommand {
             None
         };
 
-        let client = engine_state
+        let server = engine_state
             .get_mcp_client_manager()
-            .get_client(Some(&tool_name))
+            .get_server(&tool_name)
             .unwrap();
 
         let rt = Runtime::new().unwrap();
@@ -85,7 +85,7 @@ impl Command for CallToolCommand {
             };
 
             // Call the tool through the MCP client
-            client.call_tool(&tool_name, args_json).await
+            server.client.call_tool(&tool_name, args_json).await
         });
 
         match result {

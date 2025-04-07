@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use indexmap::IndexMap;
-use log::{info, warn};
+use log::{debug, info, warn};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParam, ClientInfo, Content, Resource, ResourceTemplate, Tool},
@@ -16,6 +16,7 @@ use tokio::process::Command;
 use crate::config::McpConnectionType;
 
 /// Client for interacting with an MCP server
+#[derive(Clone, Debug)]
 pub struct McpClient {
     client: Arc<RunningService<RoleClient, ClientInfo>>,
     tools: Vec<Tool>,
@@ -149,14 +150,47 @@ impl McpClient {
 
         let program = cmd_args.remove(0);
         let mut command = Command::new(&program);
-        command.args(&cmd_args);
-        command.envs(env);
 
         // Check if this is a Docker command - Docker needs special handling for interactive mode
         let is_docker = program.contains("docker")
             && all_args
                 .iter()
                 .any(|arg| arg == "-i" || arg == "--interactive");
+
+        // For Docker commands, we need to pass env vars as -e KEY=VALUE arguments
+        // For non-Docker commands, we use the standard envs method
+        if is_docker {
+            // Find Docker 'run' command position (if it exists)
+            let run_pos = cmd_args.iter().position(|arg| arg == "run");
+
+            if let Some(pos) = run_pos {
+                // Add environment variables as Docker arguments after the 'run' command
+                let mut docker_args = Vec::new();
+                docker_args.extend_from_slice(&cmd_args[..=pos]);
+
+                // Add each environment variable as -e KEY=VALUE
+                for (key, value) in env {
+                    docker_args.push("-e".to_string());
+                    docker_args.push(format!("{key}={value}"));
+                }
+
+                // Add the rest of the arguments
+                if pos + 1 < cmd_args.len() {
+                    docker_args.extend_from_slice(&cmd_args[pos + 1..]);
+                }
+
+                command.args(docker_args);
+            } else {
+                // No 'run' command found, just pass arguments as is
+                command.args(&cmd_args);
+                // Still set environment variables on the process
+                command.envs(env);
+            }
+        } else {
+            // Non-Docker command, use standard args and envs
+            command.args(&cmd_args);
+            command.envs(env);
+        }
 
         // Set up stdio with special considerations for Docker
         if is_docker {
@@ -177,6 +211,7 @@ impl McpClient {
 
         // Log the command being executed
         info!("Starting command: {}", shell_words::join(all_args));
+        debug!("Command details: {:#?}", command);
 
         let process =
             TokioChildProcess::new(&mut command).context("Failed to start command process")?;
@@ -270,8 +305,7 @@ impl McpClient {
         // Log the request if debug is enabled
         if self.debug {
             // Use Nushell formatting for the request parameters
-            let span = nu_protocol::Span::new(0, 0); // Create a dummy span
-            let nu_formatted = crate::util::format::format_json_as_nu(&params, span);
+            let nu_formatted = crate::util::format::format_json_as_nu(&params, None);
 
             info!("MCP REQUEST to '{}':\n{}", tool_name, nu_formatted);
         }
@@ -289,9 +323,8 @@ impl McpClient {
         // Log the response if debug is enabled
         if self.debug {
             // Use Nushell formatting for the response
-            let span = nu_protocol::Span::new(0, 0); // Create a dummy span
             let response_value = serde_json::to_value(&result).unwrap_or_default();
-            let nu_formatted = crate::util::format::format_json_as_nu(&response_value, span);
+            let nu_formatted = crate::util::format::format_json_as_nu(&response_value, None);
 
             info!("MCP RESPONSE from '{}':\n{}", tool_name, nu_formatted);
         }

@@ -2,13 +2,18 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use indexmap::IndexMap;
 use log::info;
 use nu_protocol::engine::{EngineState, Stack};
-use nu_protocol::{PipelineData, ShellError, Value};
+use nu_protocol::{PipelineData, ShellError, Span, Value};
 use rmcp::model::Tool;
+use serde_json::Value as JsonValue;
 use tokio::runtime::Runtime;
 
 use crate::commands::tool::register_dynamic_tool;
+use crate::engine::EngineStateExt;
+use crate::mcp_manager::{RegisteredServer, RegisteredTool};
+use crate::util::format::{json_to_nu, json_to_nu_result};
 
 use super::tool_mapper;
 use super::utils::ReplClient;
@@ -17,55 +22,76 @@ use super::utils::ReplClient;
 /// This allows us to register tools even from within a command that only has
 /// an immutable reference to EngineState
 pub fn register_mcp_tools_in_working_set(
+    name: &str,
     working_set: &mut nu_protocol::engine::StateWorkingSet,
     client: &Arc<ReplClient>,
-) -> Result<()> {
+) -> Result<IndexMap<String, RegisteredTool>> {
     let tools = client.get_tools();
+    let mut registered_tools = IndexMap::new();
 
     info!(
-        "Registering {} MCP tools from client '{}' under namespace 'tool'",
+        "Registering {} MCP tools from client '{}' (raw name: {}) under namespace 'tool'",
         tools.len(),
-        client.name
+        client.name,
+        name
     );
 
     for tool in tools {
-        register_mcp_tool_in_working_set(working_set, &tool, client, &client.name)?;
+        // Extract the raw schema JSON before registration
+        let schema = tool.input_schema.as_ref();
+        let raw_schema = serde_json::to_value(schema).unwrap_or(JsonValue::Null);
+
+        // Register the tool as a command
+        register_mcp_tool_in_working_set(name, working_set, &tool, client)?;
+        registered_tools.insert(
+            tool.name.to_string(),
+            RegisteredTool {
+                tool: tool.clone(),
+                namespace: client.name.clone(),
+                name: tool.name.to_string(),
+                raw_schema: json_to_nu(&raw_schema, Some(Span::unknown())),
+                client: client.clone(),
+            },
+        );
     }
 
-    Ok(())
+    Ok(registered_tools)
 }
 
 /// Register all MCP tools as Nushell commands using the standard approach with mutable EngineState
-pub fn register_mcp_tools(engine_state: &mut EngineState, client: &Arc<ReplClient>) -> Result<()> {
+pub fn register_mcp_tools(
+    name: &str,
+    engine_state: &mut EngineState,
+    client: &Arc<ReplClient>,
+) -> Result<RegisteredServer> {
     let tools = client.get_tools();
 
     info!(
-        "Registering {} MCP tools from client '{}' under namespace 'tool'",
+        "Registering {} MCP tools from client '{}' (raw name: {}) under namespace 'tool'",
         tools.len(),
+        name,
         client.name
     );
 
     // Use StateWorkingSet internally for consistency
     let mut working_set = nu_protocol::engine::StateWorkingSet::new(engine_state);
 
-    for tool in tools {
-        register_mcp_tool_in_working_set(&mut working_set, &tool, client, &client.name)?;
-    }
+    let registered_tools = register_mcp_tools_in_working_set(name, &mut working_set, client)?;
 
     // Apply the changes to the engine state
     let delta = working_set.render();
     engine_state.merge_delta(delta)?;
 
-    Ok(())
+    Ok(RegisteredServer::new(client.clone(), registered_tools))
 }
 
 /// Register a single MCP tool as a Nushell command using StateWorkingSet
 /// This version works with an immutable EngineState reference by using StateWorkingSet
 fn register_mcp_tool_in_working_set(
+    mcp_namespace: &str,
     working_set: &mut nu_protocol::engine::StateWorkingSet,
     tool: &Tool,
     client: &Arc<ReplClient>,
-    mcp_namespace: &str,
 ) -> Result<()> {
     // Get tool information
     let tool_name = tool.name.clone();

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone, Debug)]
 pub struct ReplClient {
     pub(crate) name: String,
     pub(crate) client: McpClient,

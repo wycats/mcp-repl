@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log::trace;
 use nu_engine::CallExt;
 use nu_protocol::{
     Category, Signature, SyntaxShape, Type,
@@ -18,7 +19,7 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
     let name = tool.name.to_string();
 
     // DEBUG: Output the raw schema for inspection
-    eprintln!("DEBUG: Tool {} schema: {:?}", name, tool.input_schema);
+    trace!("DEBUG: Tool {} schema: {:?}", name, tool.input_schema);
 
     let mut signature =
         Signature::build(name.clone()).category(Category::Custom(category.to_string()));
@@ -26,7 +27,7 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
     // Get all schema properties
     if let Some(schema_props) = get_schema_properties(tool) {
         // DEBUG: Output the properties we found
-        eprintln!(
+        trace!(
             "DEBUG: Properties for tool {}: {:?}",
             name,
             schema_props.keys().collect::<Vec<_>>()
@@ -41,7 +42,7 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
             .filter(|(name, _)| is_parameter_required(tool, name).unwrap_or(false))
             .map(|(name, schema)| (name.clone(), schema.clone()))
             .collect();
-            
+
         let optional_params: Vec<(String, JsonValue)> = prop_vec
             .iter()
             .filter(|(name, _)| !is_parameter_required(tool, name).unwrap_or(true))
@@ -57,7 +58,7 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
             // Rule 2: If exactly two required parameters, make them positional
             2
         } else if required_params.len() == 1 && !optional_params.is_empty() {
-            // Rule 3: If exactly one required parameter and rest are optional, 
+            // Rule 3: If exactly one required parameter and rest are optional,
             // make the required one positional
             1
         } else {
@@ -69,7 +70,7 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
         for i in 0..positional_count {
             let param_name: &str;
             let param_schema: &JsonValue;
-            
+
             // For tools with a single parameter (required or optional)
             if total_param_count == 1 {
                 let (name, schema) = &prop_vec[0];
@@ -80,6 +81,10 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
                 let (name, schema) = &required_params[i];
                 param_name = name;
                 param_schema = schema;
+            } else {
+                // This should not happen based on our rules, but handle it gracefully
+                continue;
+            }
 
             // Get parameter description
             let description = get_parameter_description(param_schema)
@@ -88,16 +93,15 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
             // Determine parameter type/shape
             let syntax_shape = map_json_schema_to_syntax_shape(param_schema)?;
 
-                // Determine if parameter is required or optional
-                let is_required = is_parameter_required(tool, param_name)?;
-                
-                if is_required {
-                    // Add as required positional parameter
-                    signature = signature.required(param_name.clone(), syntax_shape, description);
-                } else {
-                    // Add as optional positional parameter
-                    signature = signature.optional(param_name.clone(), syntax_shape, description);
-                }
+            // Determine if parameter is required or optional
+            let is_required = is_parameter_required(tool, param_name)?;
+
+            if is_required {
+                // Add as required positional parameter
+                signature = signature.required(param_name, syntax_shape, description);
+            } else {
+                // Add as optional positional parameter
+                signature = signature.optional(param_name, syntax_shape, description);
             }
         }
 
@@ -218,7 +222,7 @@ fn extract_useful_schema_info(param_schema: &JsonValue, param_name: &str) -> Opt
                 .iter()
                 .filter_map(|v| {
                     if let JsonValue::String(s) = v {
-                        Some(format!("\"{}\"" , s.clone()))
+                        Some(format!("\"{}\"", s.clone()))
                     } else {
                         None
                     }
@@ -395,7 +399,7 @@ pub fn map_call_args_to_tool_params(
             .filter(|(name, _)| is_parameter_required(tool, name).unwrap_or(false))
             .map(|(name, schema)| (name.clone(), schema.clone()))
             .collect();
-            
+
         let optional_params: Vec<(String, JsonValue)> = prop_vec
             .iter()
             .filter(|(name, _)| !is_parameter_required(tool, name).unwrap_or(true))
@@ -411,7 +415,7 @@ pub fn map_call_args_to_tool_params(
             // Rule 2: If exactly two required parameters, make them positional
             2
         } else if required_params.len() == 1 && !optional_params.is_empty() {
-            // Rule 3: If exactly one required parameter and rest are optional, 
+            // Rule 3: If exactly one required parameter and rest are optional,
             // make the required one positional
             1
         } else {
@@ -422,7 +426,7 @@ pub fn map_call_args_to_tool_params(
         // Process positional parameters based on our rules
         for i in 0..positional_count {
             let param_name: &str;
-            
+
             // For tools with a single parameter (required or optional)
             if total_param_count == 1 {
                 let (name, _) = &prop_vec[0];

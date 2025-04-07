@@ -1,10 +1,13 @@
 use nu_engine::CallExt;
 use nu_protocol::{
-    Category, PipelineData, ShellError, Signature, Value,
+    Category, IntoPipelineData, PipelineData, ShellError, Signature, Value,
     engine::{Command, EngineState, Stack},
 };
+use serde_json::Value as JsonValue;
 
 use crate::engine::EngineStateExt;
+
+use super::dynamic_commands::dynamic_tool_commands::list_tool_commands;
 
 /// List MCP tools command
 #[derive(Clone)]
@@ -17,7 +20,7 @@ impl Command for ListToolsCommand {
 
     fn signature(&self) -> Signature {
         Signature::build(String::from("mcp-list-tools"))
-            .switch("long", "Show long description", Some('l'))
+            .switch("protocol", "Show protocol schema", Some('r'))
             .category(Category::Custom(String::from("mcp")))
     }
 
@@ -32,44 +35,8 @@ impl Command for ListToolsCommand {
         call: &nu_protocol::engine::Call<'_>,
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        let span = call.head;
-        let long: bool = call.has_flag(engine_state, stack, "long")?;
+        let protocol = call.get_flag_span(stack, "protocol");
 
-        let clients = engine_state.get_mcp_client_manager().get_clients();
-
-        let mut record = crate::util::NuValueMap::default();
-        for (name, client) in clients.iter() {
-            let tools = client.get_tools().to_vec();
-
-            for tool in tools {
-                let mut tool_record = crate::util::NuValueMap::default();
-
-                if let Some(desc) = &tool.description {
-                    tool_record.add_string("description", desc.clone(), span);
-                }
-
-                if long {
-                    // Add schema information if available
-                    // Convert the JSON schema to a proper Nu value object
-                    // Use schema_as_json_value() to get a serde_json::Value first
-                    let schema_json = tool.schema_as_json_value();
-                    let schema_value =
-                        match crate::commands::call_tool::convert_json_value_to_nu_value(
-                            &schema_json,
-                            span,
-                        ) {
-                            Ok(value) => value,
-                            Err(_) => {
-                                // Fallback to string representation if conversion fails
-                                Value::string(format!("{:?}", &tool.input_schema), span)
-                            }
-                        };
-                    tool_record.add("schema", schema_value);
-                }
-
-                record.add(name, tool_record.into_value(span));
-            }
-        }
-        Ok(PipelineData::Value(record.into_value(span), None))
+        list_tool_commands(engine_state, call, protocol)
     }
 }

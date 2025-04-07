@@ -192,16 +192,21 @@ impl McpRepl {
         let history_file = mcp_repl_dir.join("history.txt");
         info!("Using custom history file: {:?}", history_file);
 
-        // Store the path string for later use in the run method
-        let history_path_str = history_file.to_string_lossy().to_string();
+        // The history file path will be used in custom configuration
 
         // Create a custom history configuration
         let mut history_config = HistoryConfig::default();
         history_config.file_format = HistoryFileFormat::Plaintext;
-
+        history_config.max_size = 100000; // Reasonable history size limit
+        history_config.sync_on_enter = true; // Save history immediately after each command
+        history_config.isolation = true; // Ensure MCP REPL history is isolated from standard Nushell history
+        
+        // Store the history file path for reference and debug it
+        debug!("Custom MCP history file set at: {:?}", history_file);
+        
         // Update the history path in the static
         let mut history_path = HISTORY_PATH.lock().unwrap();
-        *history_path = Some(history_path_str);
+        *history_path = Some(history_file.to_string_lossy().to_string());
 
         Ok(history_config)
     }

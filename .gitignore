@@ -1,3 +1,4 @@
 target
 node_modules
 nu-mcp-repl.code-workspace
+mcp-repl.toml

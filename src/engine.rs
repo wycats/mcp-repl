@@ -13,7 +13,7 @@ static MCP_CLIENT_MANAGER_STORE: OnceLock<Mutex<McpClientManager>> = OnceLock::n
 
 pub fn get_mcp_client_manager() -> MutexGuard<'static, McpClientManager> {
     MCP_CLIENT_MANAGER_STORE
-        .get_or_init(|| Mutex::new(McpClientManager::new()))
+        .get_or_init(|| Mutex::new(McpClientManager::default()))
         .lock()
         .unwrap()
 }

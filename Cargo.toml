@@ -45,3 +45,4 @@ indexmap = "2.9.0"
 config = { version = "0.15.11", features = ["indexmap", "preserve_order"] }
 serde = { version = "1.0.219", features = ["derive"] }
 envy = "0.4.2"
+derive-new = "0.7.0"

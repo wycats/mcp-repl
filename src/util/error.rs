@@ -1,4 +1,14 @@
-use nu_protocol::{ShellError, Span};
+use nu_protocol::{IntoValue, ShellError, Span};
+
+pub fn result_to_val(
+    result: Result<nu_protocol::Value, ShellError>,
+    span: Option<Span>,
+) -> nu_protocol::Value {
+    match result {
+        Ok(value) => value,
+        Err(error) => IntoValue::into_value(error, span.unwrap_or(Span::unknown())),
+    }
+}
 
 pub fn generic_error(
     message: impl Into<String>,

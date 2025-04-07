@@ -1,6 +1,29 @@
 use nu_protocol::{IntoPipelineData, PipelineData, Span, Value};
 pub mod error;
 pub mod format;
+
+pub struct NuArray {
+    values: Vec<Value>,
+}
+
+impl NuArray {
+    pub fn new() -> Self {
+        Self { values: Vec::new() }
+    }
+
+    pub fn add(&mut self, val: Value) {
+        self.values.push(val);
+    }
+
+    pub fn into_value(self, internal_span: Span) -> Value {
+        Value::list(self.values, internal_span)
+    }
+
+    pub fn into_pipeline_data(self, span: Span) -> PipelineData {
+        self.into_value(span).into_pipeline_data()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct NuValueMap {
     cols: Vec<String>,

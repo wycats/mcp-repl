@@ -1,17 +1,24 @@
-use anyhow::{Result, anyhow};
-use nu_protocol::{IntoPipelineData, PipelineData, Span, Value};
+use nu_protocol::{IntoPipelineData, PipelineData, ShellError, Span, Value};
 use serde_json::Value as JsonValue;
 
+use super::error::result_to_val;
+
 /// Convert a JSON value to a Nushell value for pretty display
-pub fn json_to_nu_value(json: &JsonValue, span: Span) -> Result<Value> {
-    // Use the existing conversion function from call_tool
-    crate::commands::call_tool::convert_json_value_to_nu_value(json, span)
-        .map_err(|e| anyhow!(e.to_string()))
+pub fn json_to_nu_result(json: &JsonValue, span: Option<Span>) -> Result<Value, ShellError> {
+    crate::commands::call_tool::convert_json_value_to_nu_value(
+        json,
+        span.unwrap_or(Span::unknown()),
+    )
+}
+
+/// Convert a JSON value to a Nushell value for pretty display
+pub fn json_to_nu(json: &JsonValue, span: Option<Span>) -> Value {
+    result_to_val(json_to_nu_result(json, span), span)
 }
 
 /// Format a JSON value as a string using Nushell's value rendering
-pub fn format_json_as_nu(json: &JsonValue, span: Span) -> String {
-    match json_to_nu_value(json, span) {
+pub fn format_json_as_nu(json: &JsonValue, span: Option<Span>) -> String {
+    match json_to_nu_result(json, span) {
         Ok(nu_value) => {
             // Try to convert the value to a string using Nushell's own string representation
             // In Nushell 0.103.0, use coerce_into_string which tries to represent any value as a string
@@ -72,7 +79,7 @@ pub fn format_nu_value(value: &Value) -> String {
 /// Convert a JSON object to a Nushell record and format it as a table string
 pub fn format_json_object_as_table(
     json_obj: &serde_json::Map<String, serde_json::Value>,
-    span: Span,
+    span: Option<Span>,
 ) -> String {
     match serde_json::Value::Object(json_obj.clone()) {
         json => format_json_as_nu(&json, span),
@@ -171,18 +178,18 @@ mod tests {
     fn test_format_json_as_nu() {
         // Test simple string
         let json_string = json!("hello");
-        assert_eq!(format_json_as_nu(&json_string, test_span()), "hello");
+        assert_eq!(format_json_as_nu(&json_string, Some(test_span())), "hello");
 
         // Test integer
         let json_int = json!(42);
-        assert_eq!(format_json_as_nu(&json_int, test_span()), "42");
+        assert_eq!(format_json_as_nu(&json_int, Some(test_span())), "42");
 
         // Test object
         let json_obj = json!({
             "name": "Alice",
             "age": 25
         });
-        let formatted = format_json_as_nu(&json_obj, test_span());
+        let formatted = format_json_as_nu(&json_obj, Some(test_span()));
         assert!(formatted.contains("name"));
         assert!(formatted.contains("Alice"));
         assert!(formatted.contains("age"));
@@ -197,7 +204,7 @@ mod tests {
         obj.insert("age".to_string(), json!(35));
         obj.insert("is_active".to_string(), json!(true));
 
-        let formatted = format_json_object_as_table(&obj, test_span());
+        let formatted = format_json_object_as_table(&obj, Some(test_span()));
 
         // Verify all values are present
         assert!(formatted.contains("name"));
@@ -215,12 +222,12 @@ mod tests {
 
         // Test null
         let json_null = json!(null);
-        let nu_null = json_to_nu_value(&json_null, test_span()).unwrap();
+        let nu_null = json_to_nu_result(&json_null, Some(test_span())).unwrap();
         assert!(matches!(nu_null, Value::Nothing { .. }));
 
         // Test simple values
         let json_string = json!("test");
-        let nu_string = json_to_nu_value(&json_string, test_span()).unwrap();
+        let nu_string = json_to_nu_result(&json_string, Some(test_span())).unwrap();
         if let Value::String { val, .. } = nu_string {
             assert_eq!(val, "test");
         } else {
@@ -228,7 +235,7 @@ mod tests {
         }
 
         let json_number = json!(123);
-        let nu_number = json_to_nu_value(&json_number, test_span()).unwrap();
+        let nu_number = json_to_nu_result(&json_number, Some(test_span())).unwrap();
         if let Value::Int { val, .. } = nu_number {
             assert_eq!(val, 123);
         } else {

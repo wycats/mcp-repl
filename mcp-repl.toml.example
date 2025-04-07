@@ -1,0 +1,16 @@
+[servers.fs]
+command = "./node_modules/.bin/mcp-server-filesystem ."
+
+[servers.github]
+command = "docker run -i --rm ghcr.io/github/github-mcp-server"
+env.GITHUB_PERSONAL_ACCESS_TOKEN = "your-github-token-here"
+
+[servers.fetch]
+command = "docker run -i --rm mcp/fetch"
+
+[servers.sqlite]
+command = "docker run -i --rm -v mcp-test:/mcp mcp/sqlite --db-path /mcp/db.sqlite"
+
+[servers.agentql]
+command = "npx -y agentql-mcp"
+env.AGENTQL_API_KEY = "your-agentql-api-key-here"

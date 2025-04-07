@@ -1,4 +1,5 @@
 use anyhow::Result;
+use nu_engine::CallExt;
 use nu_protocol::{
     Category, IntoPipelineData, PipelineData, ShellError, Signature, Type, Value,
     engine::{Call, Command, EngineState, Stack, StateWorkingSet},
@@ -111,6 +112,11 @@ impl Command for ToolListCommand {
     fn signature(&self) -> Signature {
         Signature::build("tool list")
             .category(Category::Custom("mcp".into()))
+            .switch(
+                "protocol",
+                "Include protocol information for each tool",
+                Some('p'),
+            )
             .input_output_types(vec![(Type::Any, Type::Table(vec![].into()))])
     }
 
@@ -133,6 +139,7 @@ impl Command for ToolListCommand {
         crate::commands::dynamic_commands::dynamic_tool_commands::list_tool_commands(
             engine_state,
             call,
+            call.get_flag_span(stack, "protocol"),
         )
     }
 }
