@@ -2,10 +2,11 @@
 
 ## Argument Mapping Strategy
 
-1. If the tool has one or two _required_ parameters, map them onto positional arguments.
-2. Optional parameters that are booleans should be mapped to switches (e.g., `--verbose`).
-3. All other optional parameters should be mapped to flags (e.g., `--limit 10`).
-4. If the tool has more than two required parameters, the remaining parameters should be mapped to required flags.
+1. If the tool has exactly one required or optional parameter, map it onto a positional argument.
+2. If the tool has exactly two required parameters, map them onto positional arguments.
+3. If the tool has exactly one or two required parameters and all of the rest of the arguments are optional, map the required parameters onto positional arguments and the optional parameters onto flags.
+4. Optional parameters that are booleans should be mapped to switches (e.g., `--verbose`).
+5. All other optional parameters should be mapped to flags (e.g., `--limit 10`).
 
 We need to make sure that these mappings are two-way: when the tool is called, it needs to convert the arguments passed to Nushell into the correct JSON arguments for the MCP tool.
 

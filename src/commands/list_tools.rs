@@ -4,6 +4,8 @@ use nu_protocol::{
     engine::{Command, EngineState, Stack},
 };
 
+use crate::engine::EngineStateExt;
+
 /// List MCP tools command
 #[derive(Clone)]
 pub struct ListToolsCommand;
@@ -33,52 +35,41 @@ impl Command for ListToolsCommand {
         let span = call.head;
         let long: bool = call.has_flag(engine_state, stack, "long")?;
 
-        // Try to get the MCP client from the utils
-        let client = match crate::commands::utils::get_mcp_client(engine_state) {
-            Ok(client) => client,
-            Err(err) => {
-                return Err(ShellError::GenericError {
-                    error: "Could not access MCP client".into(),
-                    msg: err.to_string(),
-                    span: Some(span),
-                    help: Some("Make sure the MCP client is connected".into()),
-                    inner: Vec::new(),
-                });
-            }
-        };
+        let clients = engine_state.get_mcp_client_manager().get_clients();
 
-        // Get tools from the MCP client
-        let tools = client.get_tools().to_vec();
         let mut record = crate::util::NuValueMap::default();
+        for (name, client) in clients.iter() {
+            let tools = client.get_tools().to_vec();
 
-        for tool in tools {
-            let mut tool_record = crate::util::NuValueMap::default();
+            for tool in tools {
+                let mut tool_record = crate::util::NuValueMap::default();
 
-            if let Some(desc) = &tool.description {
-                tool_record.add_string("description", desc.clone(), span);
+                if let Some(desc) = &tool.description {
+                    tool_record.add_string("description", desc.clone(), span);
+                }
+
+                if long {
+                    // Add schema information if available
+                    // Convert the JSON schema to a proper Nu value object
+                    // Use schema_as_json_value() to get a serde_json::Value first
+                    let schema_json = tool.schema_as_json_value();
+                    let schema_value =
+                        match crate::commands::call_tool::convert_json_value_to_nu_value(
+                            &schema_json,
+                            span,
+                        ) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                // Fallback to string representation if conversion fails
+                                Value::string(format!("{:?}", &tool.input_schema), span)
+                            }
+                        };
+                    tool_record.add("schema", schema_value);
+                }
+
+                record.add(name, tool_record.into_value(span));
             }
-
-            if long {
-                // Add schema information if available
-                // Convert the JSON schema to a proper Nu value object
-                // Use schema_as_json_value() to get a serde_json::Value first
-                let schema_json = tool.schema_as_json_value();
-                let schema_value = match crate::commands::call_tool::convert_json_value_to_nu_value(
-                    &schema_json,
-                    span,
-                ) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        // Fallback to string representation if conversion fails
-                        Value::string(format!("{:?}", &tool.input_schema), span)
-                    }
-                };
-                tool_record.add("schema", schema_value);
-            }
-
-            record.add(tool.name, tool_record.into_value(span));
         }
-
         Ok(PipelineData::Value(record.into_value(span), None))
     }
 }

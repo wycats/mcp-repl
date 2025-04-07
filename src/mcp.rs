@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow};
+use indexmap::IndexMap;
 use log::{info, warn};
 use rmcp::{
     RoleClient, ServiceExt,
@@ -12,13 +13,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::process::Command;
 
-/// Type of MCP connection to establish
-pub enum McpConnectionType {
-    /// SSE-based MCP server (HTTP Server-Sent Events)
-    Sse(String),
-    /// Command-based MCP server (launches a subprocess)
-    Command(String),
-}
+use crate::config::McpConnectionType;
 
 /// Client for interacting with an MCP server
 pub struct McpClient {
@@ -30,17 +25,17 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Create a new MCP client with the specified connection type
+    /// Create a new MCP client with the specified connection type (async version)
     pub async fn connect(connection_type: McpConnectionType, debug: bool) -> Result<Self> {
         // Initialize the MCP client based on the connection type
         let client = match connection_type {
-            McpConnectionType::Sse(url) => {
+            McpConnectionType::Sse { url } => {
                 info!("Connecting via SSE: {}", url);
                 Self::build_sse_client(&url).await?
             }
-            McpConnectionType::Command(command) => {
+            McpConnectionType::Command { command, env } => {
                 info!("Connecting via command: {}", command);
-                Self::build_command_client(&command).await?
+                Self::build_command_client(&command, &env.unwrap_or_default()).await?
             }
         };
 
@@ -105,14 +100,26 @@ impl McpClient {
             Vec::new()
         };
 
-        // Create the client instance
+        // Create the client instance with the loaded data
         Ok(Self {
             client: Arc::new(client),
+            tools,     // Store the tools we loaded
+            resources, // Store the resources we loaded
+            templates, // Store the templates we loaded
             debug,
-            tools,
-            resources,
-            templates,
         })
+    }
+
+    /// Create a new MCP client synchronously (to be used at startup, not in a runtime)
+    /// This is a separate method to avoid accidental nested runtime issues
+    pub fn connect_sync(
+        connection_type: McpConnectionType,
+        debug: bool,
+        runtime: &tokio::runtime::Runtime,
+    ) -> Result<Self> {
+        // Use the provided runtime to connect - this should only be called from a context
+        // that is not already inside a runtime execution context
+        runtime.block_on(Self::connect(connection_type, debug))
     }
 
     /// Build an SSE-based MCP client
@@ -131,21 +138,69 @@ impl McpClient {
     }
 
     /// Build a command-based MCP client that launches a subprocess
-    async fn build_command_client(cmd: &str) -> Result<RunningService<RoleClient, ClientInfo>> {
-        let mut cmd = shell_words::split(cmd).context("Failed to parse command")?;
+    async fn build_command_client(
+        cmd: &str,
+        env: &IndexMap<String, String>,
+    ) -> Result<RunningService<RoleClient, ClientInfo>> {
+        let mut cmd_args = shell_words::split(cmd).context("Failed to parse command")?;
 
-        let program = cmd.remove(0);
-        let mut command = Command::new(program);
-        command.args(cmd);
+        // Save the command for logging before we consume parts of it
+        let all_args = cmd_args.clone(); // Clone before we mutate
+
+        let program = cmd_args.remove(0);
+        let mut command = Command::new(&program);
+        command.args(&cmd_args);
+        command.envs(env);
+
+        // Check if this is a Docker command - Docker needs special handling for interactive mode
+        let is_docker = program.contains("docker")
+            && all_args
+                .iter()
+                .any(|arg| arg == "-i" || arg == "--interactive");
+
+        // Set up stdio with special considerations for Docker
+        if is_docker {
+            info!("Detected Docker in interactive mode - using special configuration");
+            // For Docker in interactive mode, we need to ensure proper stdin/stdout handling
+            command.stdin(std::process::Stdio::piped());
+            command.stdout(std::process::Stdio::piped());
+            // Allow stderr to be inherited so we can see Docker's output
+            command.stderr(std::process::Stdio::inherit());
+            // Don't kill the process when the parent process exits
+            command.kill_on_drop(false);
+        } else {
+            // Standard configuration for non-Docker commands
+            command.stdin(std::process::Stdio::piped());
+            command.stdout(std::process::Stdio::piped());
+            command.stderr(std::process::Stdio::piped());
+        }
+
+        // Log the command being executed
+        info!("Starting command: {}", shell_words::join(all_args));
 
         let process =
             TokioChildProcess::new(&mut command).context("Failed to start command process")?;
 
         let client_info = rmcp::model::ClientInfo::default();
-        let client = client_info
-            .serve(process)
+
+        // Longer timeout for Docker commands
+        let timeout_duration = if is_docker {
+            tokio::time::Duration::from_secs(60) // Docker might need more time to pull images
+        } else {
+            tokio::time::Duration::from_secs(20)
+        };
+
+        info!(
+            "Waiting up to {} seconds for connection to initialize...",
+            timeout_duration.as_secs()
+        );
+
+        // Add a timeout for the connection
+        let timeout = tokio::time::timeout(timeout_duration, client_info.serve(process))
             .await
-            .context("Failed to initialize command client")?;
+            .context("Connection timed out")?;
+
+        let client = timeout.context("Failed to initialize command client")?;
 
         Ok(client)
     }
@@ -217,12 +272,8 @@ impl McpClient {
             // Use Nushell formatting for the request parameters
             let span = nu_protocol::Span::new(0, 0); // Create a dummy span
             let nu_formatted = crate::util::format::format_json_as_nu(&params, span);
-            
-            info!(
-                "MCP REQUEST to '{}':\n{}",
-                tool_name,
-                nu_formatted
-            );
+
+            info!("MCP REQUEST to '{}':\n{}", tool_name, nu_formatted);
         }
 
         // Call the tool with the parameters
@@ -241,12 +292,8 @@ impl McpClient {
             let span = nu_protocol::Span::new(0, 0); // Create a dummy span
             let response_value = serde_json::to_value(&result).unwrap_or_default();
             let nu_formatted = crate::util::format::format_json_as_nu(&response_value, span);
-            
-            info!(
-                "MCP RESPONSE from '{}':\n{}",
-                tool_name,
-                nu_formatted
-            );
+
+            info!("MCP RESPONSE from '{}':\n{}", tool_name, nu_formatted);
         }
 
         Ok(result.content)

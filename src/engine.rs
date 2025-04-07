@@ -1,70 +1,26 @@
-use crate::commands::utils::ReplClient;
 use nu_protocol::engine::EngineState;
-use std::sync::{Arc, Mutex};
-use tokio::runtime::Runtime;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
-/// Extension trait for EngineState to add MCP client and runtime functionality
+use crate::mcp_manager::McpClientManager;
+
+/// Extension trait for EngineState to add MCP client, manager, and runtime functionality
 pub trait EngineStateExt {
-    fn get_mcp_client(&self) -> Option<Arc<ReplClient>>;
-    fn set_mcp_client(&mut self, client: Arc<ReplClient>);
-    fn get_tokio_runtime(&self) -> Option<Arc<Runtime>>;
-    fn set_tokio_runtime(&mut self, runtime: Arc<Runtime>);
+    // New methods for client manager
+    fn get_mcp_client_manager(&self) -> MutexGuard<McpClientManager>;
 }
 
-/// Store for MCP client state
-pub struct McpClientStore {
-    client: Arc<Mutex<Option<Arc<ReplClient>>>>,
-}
+static MCP_CLIENT_MANAGER_STORE: OnceLock<Mutex<McpClientManager>> = OnceLock::new();
 
-impl McpClientStore {
-    pub fn new() -> Self {
-        Self {
-            client: Arc::new(Mutex::new(None)),
-        }
-    }
-}
-
-/// Store for Tokio runtime state
-pub struct RuntimeStore {
-    runtime: Arc<Mutex<Option<Arc<Runtime>>>>,
-}
-
-impl RuntimeStore {
-    pub fn new() -> Self {
-        Self {
-            runtime: Arc::new(Mutex::new(None)),
-        }
-    }
-}
-
-// Store the MCP client and runtime in thread-locals to avoid modifying EngineState
-thread_local! {
-    static MCP_CLIENT_STORE: McpClientStore = McpClientStore::new();
-    static RUNTIME_STORE: RuntimeStore = RuntimeStore::new();
+pub fn get_mcp_client_manager() -> MutexGuard<'static, McpClientManager> {
+    MCP_CLIENT_MANAGER_STORE
+        .get_or_init(|| Mutex::new(McpClientManager::new()))
+        .lock()
+        .unwrap()
 }
 
 impl EngineStateExt for EngineState {
-    fn get_mcp_client(&self) -> Option<Arc<ReplClient>> {
-        MCP_CLIENT_STORE.with(|store| store.client.lock().ok().and_then(|guard| guard.clone()))
-    }
-
-    fn set_mcp_client(&mut self, client: Arc<ReplClient>) {
-        MCP_CLIENT_STORE.with(|store| {
-            if let Ok(mut guard) = store.client.lock() {
-                *guard = Some(client);
-            }
-        });
-    }
-
-    fn get_tokio_runtime(&self) -> Option<Arc<Runtime>> {
-        RUNTIME_STORE.with(|store| store.runtime.lock().ok().and_then(|guard| guard.clone()))
-    }
-
-    fn set_tokio_runtime(&mut self, runtime: Arc<Runtime>) {
-        RUNTIME_STORE.with(|store| {
-            if let Ok(mut guard) = store.runtime.lock() {
-                *guard = Some(runtime);
-            }
-        });
+    // Get the MCP client manager
+    fn get_mcp_client_manager(&self) -> MutexGuard<'static, McpClientManager> {
+        get_mcp_client_manager()
     }
 }

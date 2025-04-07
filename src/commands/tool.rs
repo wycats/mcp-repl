@@ -1,7 +1,7 @@
 use anyhow::Result;
 use nu_protocol::{
     Category, IntoPipelineData, PipelineData, ShellError, Signature, Type, Value,
-    engine::{Call, Command, EngineState, Stack},
+    engine::{Call, Command, EngineState, Stack, StateWorkingSet},
 };
 use std::sync::Arc;
 
@@ -139,7 +139,7 @@ impl Command for ToolListCommand {
 
 /// Register a dynamic command using the tool system
 pub fn register_dynamic_tool(
-    engine_state: &mut EngineState,
+    working_set: &mut StateWorkingSet,
     name: &str,
     signature: Signature,
     description: String,
@@ -149,7 +149,7 @@ pub fn register_dynamic_tool(
             + Sync
             + 'static,
     >,
-) -> Result<()> {
+) {
     // Create a dynamic command that wraps the function
     let command = DynamicToolCommand {
         name: name.to_string(),
@@ -159,7 +159,7 @@ pub fn register_dynamic_tool(
     };
 
     // Register the command
-    utils::register_dynamic_command(engine_state, Box::new(command))
+    working_set.add_decl(Box::new(command));
 }
 
 /// A command that wraps a function for dynamic execution

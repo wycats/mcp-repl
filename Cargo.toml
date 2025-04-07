@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 resolver = "3"
 description = "A Nushell-based REPL for MCP (Model Context Protocol)"
+repository = "https://github.com/wycats/nu-mcp-repl"
 
 [dependencies]
 
@@ -14,13 +15,13 @@ env_logger = "0.11.8"
 log = "0.4"
 # Nushell core dependencies - use a known compatible set of versions
 
-nu-cli = { version = "0.103.0", default-features = false }
-nu-cmd-lang = { version = "0.103.0", features = ["os"] }
-nu-command = { version = "0.103.0", features = ["os"] }
-nu-engine = { version = "0.103.0", default-features = false }
-nu-json = { version = "0.103.0", default-features = false }
-nu-path = { version = "0.103.0", default-features = false }
-nu-protocol = "0.103.0"
+nu-cli = { version = "0.103.0" }
+nu-cmd-lang = { version = "0.103.0" }
+nu-command = { version = "0.103.0" }
+nu-engine = { version = "0.103.0" }
+nu-json = { version = "0.103.0" }
+nu-path = { version = "0.103.0" }
+nu-protocol = { version = "0.103.0", features = ["plugin"] }
 nu-table = "0.103.0"
 nu-color-config = "0.103.0"
 nu-utils = "0.103.0"
@@ -39,3 +40,8 @@ tokio = { version = "1.28", features = ["rt-multi-thread"] }
 shell-words = "1.1.0"
 once_cell = "1.19.0"
 dirs = "5.0.1"
+async-trait = "0.1.88"
+indexmap = "2.9.0"
+config = { version = "0.15.11", features = ["indexmap", "preserve_order"] }
+serde = { version = "1.0.219", features = ["derive"] }
+envy = "0.4.2"

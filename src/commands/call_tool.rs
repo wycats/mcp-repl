@@ -6,6 +6,9 @@ use nu_protocol::{
     engine::{Command, EngineState, Stack},
 };
 use rmcp::model::RawContent;
+use tokio::runtime::Runtime;
+
+use crate::engine::EngineStateExt;
 
 /// Call an MCP tool command
 #[derive(Clone)]
@@ -67,34 +70,14 @@ impl Command for CallToolCommand {
             None
         };
 
-        // Try to get the MCP client from the utils
-        let client = match super::utils::get_mcp_client(engine_state) {
-            Ok(client) => client,
-            Err(err) => {
-                return Err(ShellError::GenericError {
-                    error: "Could not access MCP client".into(),
-                    msg: err.to_string(),
-                    span: Some(span),
-                    help: Some("Make sure the MCP client is connected".into()),
-                    inner: Vec::new(),
-                });
-            }
-        };
+        let client = engine_state
+            .get_mcp_client_manager()
+            .get_client(Some(&tool_name))
+            .unwrap();
 
-        // Create a tokio runtime for async operations
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| ShellError::GenericError {
-                error: "Failed to create Tokio runtime".into(),
-                msg: e.to_string(),
-                span: Some(span),
-                help: None,
-                inner: Vec::new(),
-            })?;
-
+        let rt = Runtime::new().unwrap();
         // Execute the call_tool method using the MCP client
-        let result = runtime.block_on(async {
+        let result = rt.block_on(async {
             // Create the arguments JSON value
             let args_json = match json_args {
                 Some(map) => serde_json::Value::Object(map),

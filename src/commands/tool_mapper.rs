@@ -9,10 +9,11 @@ use serde_json::Value as JsonValue;
 
 /// Maps an MCP tool to a Nushell command signature
 /// Following the mapping strategy in MAPPING.md:
-/// 1. If the tool has one or two required parameters, map them onto positional arguments.
-/// 2. Optional parameters that are booleans should be mapped to switches.
-/// 3. All other optional parameters should be mapped to flags.
-/// 4. If the tool has more than two required parameters, the remaining parameters should be mapped to required flags.
+/// 1. If the tool has exactly one required or optional parameter, map it onto a positional argument.
+/// 2. If the tool has exactly two required parameters, map them onto positional arguments.
+/// 3. If the tool has exactly one or two required parameters and all of the rest of the arguments are optional, map the required parameters onto positional arguments and the optional parameters onto flags.
+/// 4. Optional parameters that are booleans should be mapped to switches (e.g., `--verbose`).
+/// 5. All other optional parameters should be mapped to flags (e.g., `--limit 10`).
 pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
     let name = tool.name.to_string();
 
@@ -34,19 +35,51 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
         // Convert properties to vec for sorting
         let prop_vec: Vec<(String, JsonValue)> = schema_props.into_iter().collect();
 
-        // Identify required parameters
+        // Identify required and optional parameters
         let required_params: Vec<(String, JsonValue)> = prop_vec
             .iter()
             .filter(|(name, _)| is_parameter_required(tool, name).unwrap_or(false))
             .map(|(name, schema)| (name.clone(), schema.clone()))
             .collect();
+            
+        let optional_params: Vec<(String, JsonValue)> = prop_vec
+            .iter()
+            .filter(|(name, _)| !is_parameter_required(tool, name).unwrap_or(true))
+            .map(|(name, schema)| (name.clone(), schema.clone()))
+            .collect();
 
-        // Determine how many required parameters to map as positional (max 2)
-        let positional_count = required_params.len().min(2);
+        // Determine positional parameters based on the new rules
+        let total_param_count = prop_vec.len();
+        let positional_count = if total_param_count == 1 {
+            // Rule 1: If exactly one parameter (required or optional), make it positional
+            1
+        } else if required_params.len() == 2 {
+            // Rule 2: If exactly two required parameters, make them positional
+            2
+        } else if required_params.len() == 1 && !optional_params.is_empty() {
+            // Rule 3: If exactly one required parameter and rest are optional, 
+            // make the required one positional
+            1
+        } else {
+            // Default to no positional parameters for other cases
+            0
+        };
 
-        // Process positional parameters first (limited to first 2 required ones)
+        // Process positional parameters first based on our rules
         for i in 0..positional_count {
-            let (param_name, param_schema) = &required_params[i];
+            let param_name: &str;
+            let param_schema: &JsonValue;
+            
+            // For tools with a single parameter (required or optional)
+            if total_param_count == 1 {
+                let (name, schema) = &prop_vec[0];
+                param_name = name;
+                param_schema = schema;
+            } else if i < required_params.len() {
+                // Required parameters get priority for positional slots
+                let (name, schema) = &required_params[i];
+                param_name = name;
+                param_schema = schema;
 
             // Get parameter description
             let description = get_parameter_description(param_schema)
@@ -55,8 +88,17 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
             // Determine parameter type/shape
             let syntax_shape = map_json_schema_to_syntax_shape(param_schema)?;
 
-            // Add as required positional parameter
-            signature = signature.required(param_name.clone(), syntax_shape, description);
+                // Determine if parameter is required or optional
+                let is_required = is_parameter_required(tool, param_name)?;
+                
+                if is_required {
+                    // Add as required positional parameter
+                    signature = signature.required(param_name.clone(), syntax_shape, description);
+                } else {
+                    // Add as optional positional parameter
+                    signature = signature.optional(param_name.clone(), syntax_shape, description);
+                }
+            }
         }
 
         // Process remaining parameters as flags
@@ -322,10 +364,11 @@ pub fn generate_input_output_types(_tool: &Tool) -> Vec<(Type, Type)> {
 
 /// Map Nushell values to JSON values for tool parameters
 /// Following the mapping strategy in MAPPING.md:
-/// 1. If the tool has one or two required parameters, map them onto positional arguments.
-/// 2. Optional parameters that are booleans should be mapped to switches.
-/// 3. All other optional parameters should be mapped to flags.
-/// 4. If the tool has more than two required parameters, the remaining parameters should be mapped to required flags.
+/// 1. If the tool has exactly one required or optional parameter, map it onto a positional argument.
+/// 2. If the tool has exactly two required parameters, map them onto positional arguments.
+/// 3. If the tool has exactly one or two required parameters and all of the rest of the arguments are optional, map the required parameters onto positional arguments and the optional parameters onto flags.
+/// 4. Optional parameters that are booleans should be mapped to switches (e.g., `--verbose`).
+/// 5. All other optional parameters should be mapped to flags (e.g., `--limit 10`).
 pub fn map_call_args_to_tool_params(
     engine_state: &EngineState,
     stack: &mut Stack,
@@ -346,38 +389,70 @@ pub fn map_call_args_to_tool_params(
             req2.cmp(&req1) // required first
         });
 
-        // Get required parameters
+        // Identify required and optional parameters
         let required_params: Vec<(String, JsonValue)> = prop_vec
             .iter()
             .filter(|(name, _)| is_parameter_required(tool, name).unwrap_or(false))
             .map(|(name, schema)| (name.clone(), schema.clone()))
             .collect();
+            
+        let optional_params: Vec<(String, JsonValue)> = prop_vec
+            .iter()
+            .filter(|(name, _)| !is_parameter_required(tool, name).unwrap_or(true))
+            .map(|(name, schema)| (name.clone(), schema.clone()))
+            .collect();
 
-        // Determine how many required parameters to map as positional
-        // (maximum of 2 as per MAPPING.md)
-        let positional_count = required_params.len().min(2);
+        // Determine positional parameters based on the new rules
+        let total_param_count = prop_vec.len();
+        let positional_count = if total_param_count == 1 {
+            // Rule 1: If exactly one parameter (required or optional), make it positional
+            1
+        } else if required_params.len() == 2 {
+            // Rule 2: If exactly two required parameters, make them positional
+            2
+        } else if required_params.len() == 1 && !optional_params.is_empty() {
+            // Rule 3: If exactly one required parameter and rest are optional, 
+            // make the required one positional
+            1
+        } else {
+            // Default to no positional parameters for other cases
+            0
+        };
 
-        // Process positional parameters (limited to first 2 required ones)
+        // Process positional parameters based on our rules
         for i in 0..positional_count {
-            let (param_name, _) = &required_params[i];
+            let param_name: &str;
+            
+            // For tools with a single parameter (required or optional)
+            if total_param_count == 1 {
+                let (name, _) = &prop_vec[0];
+                param_name = name;
+            } else if i < required_params.len() {
+                // Required parameters get priority for positional slots
+                let (name, _) = &required_params[i];
+                param_name = name;
+            } else {
+                // This shouldn't happen with our rules, but just in case
+                continue;
+            }
 
             // Try to get it as a positional argument
             let value_result = match i {
                 0 => call.opt(engine_state, stack, 0),
                 1 => call.opt(engine_state, stack, 1),
-                _ => unreachable!(), // We limited to 2 above
+                _ => unreachable!(), // Our rules limit to at most 2 positional parameters
             };
 
             if let Ok(Some(value)) = value_result {
                 let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
-                params.insert(param_name.clone(), json_value);
+                params.insert(param_name.to_string(), json_value);
                 continue; // Skip to next parameter
             }
 
             // If not found as positional, try as flag (fallback)
-            if let Some(value) = call.get_flag(engine_state, stack, param_name)? {
+            if let Some(value) = call.get_flag(engine_state, stack, &param_name.to_string())? {
                 let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
-                params.insert(param_name.clone(), json_value);
+                params.insert(param_name.to_string(), json_value);
             }
         }
 
@@ -389,9 +464,9 @@ pub fn map_call_args_to_tool_params(
             }
 
             // Process remaining parameters as flags
-            if let Some(value) = call.get_flag(engine_state, stack, param_name)? {
+            if let Some(value) = call.get_flag(engine_state, stack, &param_name.to_string())? {
                 let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
-                params.insert(param_name.clone(), json_value);
+                params.insert(param_name.to_string(), json_value);
             }
         }
     }

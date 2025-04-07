@@ -1,3 +1,4 @@
+use crate::mcp::McpClient;
 use anyhow::Result;
 use nu_protocol::DeclId;
 use nu_protocol::{
@@ -7,10 +8,6 @@ use nu_protocol::{
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
-use tokio::runtime::Runtime;
-
-use crate::engine::EngineStateExt;
-use crate::mcp::McpClient;
 
 pub struct ReplClient {
     pub(crate) name: String,
@@ -24,30 +21,6 @@ impl Deref for ReplClient {
     fn deref(&self) -> &Self::Target {
         &self.client
     }
-}
-
-/// Set the MCP client in the engine state
-pub fn set_mcp_client(engine_state: &mut EngineState, client: Arc<ReplClient>) {
-    engine_state.set_mcp_client(client);
-}
-
-/// Get the MCP client from the engine state
-pub fn get_mcp_client(engine_state: &EngineState) -> Result<Arc<ReplClient>> {
-    engine_state
-        .get_mcp_client()
-        .ok_or_else(|| anyhow::anyhow!("MCP client not found in engine state"))
-}
-
-/// Set the Tokio runtime in the engine state
-pub fn set_tokio_runtime(engine_state: &mut EngineState, runtime: Arc<Runtime>) {
-    engine_state.set_tokio_runtime(runtime);
-}
-
-/// Get the Tokio runtime from the engine state
-pub fn get_tokio_runtime(engine_state: &EngineState) -> Result<Arc<Runtime>> {
-    engine_state
-        .get_tokio_runtime()
-        .ok_or_else(|| anyhow::anyhow!("Tokio runtime not found in engine state"))
 }
 
 // Helper to convert string map to Record
@@ -141,6 +114,7 @@ pub fn register_dynamic_command(
 
     // Apply the changes to the engine state
     let delta = working_set.render();
+
     engine_state.merge_delta(delta)?;
 
     // Store the command info in our registry

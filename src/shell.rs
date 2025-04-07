@@ -1,7 +1,8 @@
 use crate::commands::help::McpHelpCommand;
-use crate::commands::utils::ReplClient;
+use crate::config::McpReplConfig;
+use crate::engine::get_mcp_client_manager;
 use anyhow::{Context, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
 use nu_cmd_lang::create_default_context;
 use nu_protocol::engine::{EngineState, Stack, StateWorkingSet};
 use nu_protocol::{Config, HistoryConfig, HistoryFileFormat, Span, Value};
@@ -9,7 +10,6 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::runtime::Runtime;
 
 // Define a static variable to hold our custom history path
 static HISTORY_PATH: Lazy<std::sync::Mutex<Option<String>>> =
@@ -24,13 +24,11 @@ pub struct McpRepl {
     engine_state: EngineState,
     /// Nushell stack
     stack: Stack,
-    /// MCP client (if available)
-    mcp_client: Option<Arc<ReplClient>>,
 }
 
 impl McpRepl {
     /// Create a new MCP REPL instance
-    pub fn new(mcp_client: Option<Arc<ReplClient>>, runtime: Arc<Runtime>) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         // Initialize a clean Nushell engine with default commands
         let mut engine_state = create_default_context();
 
@@ -58,9 +56,6 @@ impl McpRepl {
 
         // Setup a stack with essential environment variables
         let mut stack = Stack::new();
-
-        // Store the runtime in engine state
-        crate::commands::utils::set_tokio_runtime(&mut engine_state, runtime);
 
         // Set MCP environment variables if present
         if let Ok(url) = std::env::var("MCP_URL") {
@@ -97,29 +92,10 @@ impl McpRepl {
         Self::register_mcp_commands(&mut engine_state);
         debug!("Registered MCP commands in engine state");
 
-        // Log if MCP client is available
-        if let Some(client) = &mcp_client {
-            // We'll add client access to commands through the command context
-            let server_info: String = client
-                .server_info()
-                .context("Failed to get MCP server info")?;
-            info!("MCP client initialized - connected to {}", server_info);
-            println!("Connected to MCP server: {}", server_info);
-        } else {
-            warn!("No MCP client available - some commands will not work");
-        }
-
         Ok(Self {
             engine_state,
             stack,
-            mcp_client,
         })
-    }
-
-    /// Set the MCP client for this REPL
-    pub fn with_mcp_client(mut self, client: Arc<ReplClient>) -> Self {
-        self.mcp_client = Some(client);
-        self
     }
 
     /// Register MCP-specific Nushell commands and essential Nushell commands
@@ -174,76 +150,30 @@ impl McpRepl {
         }
     }
 
-    /// Run the REPL
-    pub async fn run(&mut self) -> Result<()> {
-        // Make MCP client available to commands
-        self.setup_mcp_client()
-            .context("Failed to set up MCP client in REPL context")?;
-        debug!("Set up MCP client in REPL context");
+    pub async fn register(&mut self, config: &McpReplConfig) -> Result<()> {
+        let mut manager = get_mcp_client_manager();
 
-        // Use Nushell's built-in REPL evaluation
-        let start_time = Instant::now();
-        info!("Starting REPL evaluation");
-
-        // Skip reading any config files - we want a completely isolated environment
-
-        // Get the custom history path we set earlier in create_custom_history_config
-        // If we have a custom history path, use it
-        if let Some(path) = HISTORY_PATH.lock().unwrap().clone() {
-            info!("Using custom MCP-REPL history path: {}", path);
-
-            // Store the custom path directly in the engine state for reference during evaluation
-            // This will be used by the REPL to override the default history file location
-            self.engine_state.add_env_var(
-                "HISTORY_FILE".to_string(),
-                Value::string(path, Span::unknown()),
-            );
+        for (name, server) in &config.servers {
+            log::info!("Registering MCP client: {}", name);
+            let client = server.to_client(name).await?;
+            manager.register_client(name.clone(), client, &mut self.engine_state)?;
         }
+        Ok(())
+    }
 
-        // Current signature of evaluate_repl in nu-cli 0.93.0+
-        nu_cli::evaluate_repl(
+    /// Run the REPL with support for dynamic command registration
+    pub fn run(&mut self) -> Result<()> {
+        // Run Nushell REPL for one session
+        let start_time = Instant::now();
+        let repl_result = nu_cli::evaluate_repl(
             &mut self.engine_state,
             self.stack.clone(),
             None, // nushell_path
             None, // load_std_lib
             start_time,
-        )
-        .expect("Error during REPL evaluation");
+        );
 
-        Ok(())
-    }
-
-    /// Set up the MCP client in the engine state
-    /// This allows commands to access the MCP client
-    fn setup_mcp_client(&mut self) -> Result<()> {
-        if let Some(mcp_client) = &self.mcp_client {
-            // Store the MCP client in the engine state for command access
-            log::info!("Setting MCP client in engine state");
-            crate::commands::utils::set_mcp_client(&mut self.engine_state, mcp_client.clone());
-
-            // Now that we have a client, register MCP tools as dynamic commands
-            log::info!("Registering MCP tools as dynamic commands after client initialization");
-            if let Err(err) = crate::commands::mcp_tools::register_mcp_tools(&mut self.engine_state)
-            {
-                log::warn!("Failed to register MCP tools as dynamic commands: {}", err);
-            } else {
-                log::info!("Successfully registered MCP tools as dynamic commands");
-            }
-        }
-
-        // Register our test dynamic commands as a prototype
-        if let Err(err) = crate::commands::register_test_commands(&mut self.engine_state) {
-            log::warn!("Failed to register test dynamic commands: {}", err);
-        } else {
-            log::info!("Successfully registered test dynamic commands");
-        }
-
-        Ok(())
-    }
-
-    /// Get a reference to the MCP client
-    pub fn mcp_client(&self) -> Option<&Arc<ReplClient>> {
-        self.mcp_client.as_ref()
+        repl_result.map_err(|e| anyhow::anyhow!("Error during REPL evaluation: {}", e))
     }
 
     /// Create a custom history configuration for MCP-REPL

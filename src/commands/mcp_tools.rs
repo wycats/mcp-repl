@@ -1,69 +1,107 @@
+use std::borrow::Cow;
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use log::info;
-use nu_protocol::{
-    PipelineData, ShellError, Value,
-    engine::{EngineState, Stack},
-};
+use nu_protocol::engine::{EngineState, Stack};
+use nu_protocol::{PipelineData, ShellError, Value};
 use rmcp::model::Tool;
-use serde_json::Value as JsonValue;
 use tokio::runtime::Runtime;
 
-use super::tool::register_dynamic_tool;
+use crate::commands::tool::register_dynamic_tool;
+
 use super::tool_mapper;
+use super::utils::ReplClient;
 
-/// Register all MCP tools as Nushell commands
-pub fn register_mcp_tools(engine_state: &mut EngineState) -> Result<()> {
-    // Get the MCP client from engine state
-    let client = super::utils::get_mcp_client(engine_state)?;
-
-    // Determine the MCP identifier/namespace
-    // For now, we'll use a hardcoded "fs" for the filesystem MCP
-    // In the future, this should be determined dynamically from the MCP connection
-    let mcp_namespace = client.name.as_str(); // Default namespace for now
-
+/// Register all MCP tools as Nushell commands using StateWorkingSet directly
+/// This allows us to register tools even from within a command that only has
+/// an immutable reference to EngineState
+pub fn register_mcp_tools_in_working_set(
+    working_set: &mut nu_protocol::engine::StateWorkingSet,
+    client: &Arc<ReplClient>,
+) -> Result<()> {
     let tools = client.get_tools();
+
     info!(
-        "Registering {} MCP tools under namespace '{}'",
+        "Registering {} MCP tools from client '{}' under namespace 'tool'",
         tools.len(),
-        mcp_namespace
+        client.name
     );
 
     for tool in tools {
-        register_mcp_tool(engine_state, &tool, mcp_namespace)?;
+        register_mcp_tool_in_working_set(working_set, &tool, client, &client.name)?;
     }
 
     Ok(())
 }
 
-/// Register a single MCP tool as a Nushell command
-fn register_mcp_tool(
-    engine_state: &mut EngineState,
+/// Register all MCP tools as Nushell commands using the standard approach with mutable EngineState
+pub fn register_mcp_tools(engine_state: &mut EngineState, client: &Arc<ReplClient>) -> Result<()> {
+    let tools = client.get_tools();
+
+    info!(
+        "Registering {} MCP tools from client '{}' under namespace 'tool'",
+        tools.len(),
+        client.name
+    );
+
+    // Use StateWorkingSet internally for consistency
+    let mut working_set = nu_protocol::engine::StateWorkingSet::new(engine_state);
+
+    for tool in tools {
+        register_mcp_tool_in_working_set(&mut working_set, &tool, client, &client.name)?;
+    }
+
+    // Apply the changes to the engine state
+    let delta = working_set.render();
+    engine_state.merge_delta(delta)?;
+
+    Ok(())
+}
+
+/// Register a single MCP tool as a Nushell command using StateWorkingSet
+/// This version works with an immutable EngineState reference by using StateWorkingSet
+fn register_mcp_tool_in_working_set(
+    working_set: &mut nu_protocol::engine::StateWorkingSet,
     tool: &Tool,
+    client: &Arc<ReplClient>,
     mcp_namespace: &str,
 ) -> Result<()> {
-    let tool_name = tool.name.to_string();
-    info!("Registering MCP tool: {}.{}", mcp_namespace, tool_name);
+    // Get tool information
+    let tool_name = tool.name.clone();
+    let tool_description = tool.description.clone();
 
-    // Map the MCP tool to a Nushell signature
-    // Use "tool" as the category for all MCP tools
-    let signature = tool_mapper::map_tool_to_signature(tool, "tool")
-        .context(format!("Failed to map tool '{}' to signature", tool_name))?;
-
-    // Generate a help description from the tool
-    let description = tool_mapper::generate_help_description(tool);
-
-    // Create a run function that will call the tool when the command is invoked
-    let run_fn = create_tool_run_function(tool.clone());
-
-    // Create the namespaced command name
+    // Create the namespaced C name
     // Format: "tool mcp_namespace.tool_name"
     let namespaced_tool_name = format!("{}.{}", mcp_namespace, tool_name);
     let command_name = format!("tool {}", namespaced_tool_name);
 
-    // Register the tool as a dynamic command with the namespaced identifier
-    register_dynamic_tool(engine_state, &command_name, signature, description, run_fn).context(
-        format!("Failed to register dynamic tool command: {}", command_name),
-    )?;
+    // Generate the command signature
+    let signature = tool_mapper::map_tool_to_signature(tool, "tool")
+        .context("Failed to map tool to signature")?;
+
+    info!("Registering MCP tool as command: {}", command_name);
+
+    // Generate a help description from the tool
+    let description = tool_description;
+
+    // Create a run function that will call the tool when the command is invoked
+    let run_fn = create_tool_run_function(tool.clone(), client);
+
+    // Create a dynamic command using a custom implementation
+    // that follows the same pattern as super::tool::register_dynamic_tool
+    // but works with StateWorkingSet
+
+    let desc_clone = description.clone().unwrap_or_else(|| Cow::Borrowed(""));
+
+    // We need to create a Command implementation
+    register_dynamic_tool(
+        working_set,
+        &command_name,
+        signature,
+        desc_clone.to_string(),
+        run_fn,
+    );
 
     Ok(())
 }
@@ -71,6 +109,7 @@ fn register_mcp_tool(
 /// Create a run function for the MCP tool
 fn create_tool_run_function(
     tool: Tool,
+    client: &Arc<ReplClient>,
 ) -> Box<
     dyn Fn(
             &EngineState,
@@ -78,27 +117,14 @@ fn create_tool_run_function(
             &nu_protocol::engine::Call<'_>,
             PipelineData,
         ) -> Result<PipelineData, ShellError>
-        + 'static
         + Send
-        + Sync,
+        + Sync
+        + 'static,
 > {
+    let client = client.clone();
     Box::new(move |engine_state, stack, call, _input| {
         let span = call.head;
         let tool_name = tool.name.to_string();
-
-        // Try to get the MCP client from the engine state
-        let client = match super::utils::get_mcp_client(engine_state) {
-            Ok(client) => client,
-            Err(err) => {
-                return Err(ShellError::GenericError {
-                    error: "Could not access MCP client".into(),
-                    msg: err.to_string(),
-                    span: Some(span),
-                    help: Some("Make sure the MCP client is connected".into()),
-                    inner: Vec::new(),
-                });
-            }
-        };
 
         // Map call arguments to tool parameters
         let params =
@@ -119,7 +145,7 @@ fn create_tool_run_function(
             };
 
         // Create the arguments JSON value
-        let args_json = JsonValue::Object(params);
+        let args_json = serde_json::json!(params);
 
         // We need to avoid calling block_on within a Tokio runtime, which causes panic
         // Use a separate thread with its own runtime to execute the async call
