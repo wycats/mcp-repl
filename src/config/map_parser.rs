@@ -34,8 +34,7 @@ impl TypedValueParser for EnvValueParser {
             return Err(Error::raw(
                 ErrorKind::InvalidValue,
                 format!(
-                    "Invalid key-value pair: '{}'. Expected format: 'KEY:VALUE'",
-                    s
+                    "Invalid key-value pair: '{s}'. Expected format: 'KEY:VALUE'"
                 ),
             ));
         }
@@ -55,6 +54,6 @@ impl TypedValueParser for EnvValueParser {
 ///
 /// This parser handles values in the format KEY:VALUE and supports multiple
 /// occurrences of the same argument flag, combining them into a single map.
-pub fn parse_env() -> EnvValueParser {
+#[must_use] pub fn parse_env() -> EnvValueParser {
     EnvValueParser::default()
 }

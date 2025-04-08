@@ -1,17 +1,18 @@
+use std::{path::PathBuf, sync::Arc};
+
 use anyhow::Result;
 use config::{Config, Environment, File, FileFormat, FileSourceFile, FileSourceString};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
-
-use crate::{CliArgs, commands::utils::ReplClient, mcp::McpClient};
 
 use super::parse_env;
+use crate::{CliArgs, commands::utils::ReplClient, mcp::McpClient};
 
 // Define an enum that encapsulates the different possible config sources
 #[derive(Debug)]
 pub enum ConfigSource {
     FilePath(File<FileSourceFile, FileFormat>),
+    #[allow(dead_code)]
     FileContent(File<FileSourceString, FileFormat>),
 }
 
@@ -21,7 +22,7 @@ impl McpConnectionType {
         Ok(Arc::new(ReplClient {
             name: name.to_string(),
             client,
-            debug: false,
+            _debug: false,
         }))
     }
 }
@@ -67,15 +68,16 @@ pub trait McpConfigLoader {
 
     fn load_env_config(&self) -> Result<Option<ConfigSource>> {
         let env = self.load_raw_env();
-        if let Some(path) = env.get("MCP_CONFIG") {
-            let path = PathBuf::from(path);
-            self.load_file(Some(path))
-        } else {
-            Ok(None)
-        }
+        env.get("MCP_CONFIG").map_or_else(
+            || Ok(None),
+            |path| {
+                let path = PathBuf::from(path);
+                self.load_file(Some(path))
+            },
+        )
     }
 
-    /// Return a ConfigSource enum to clearly define the possible source types
+    /// Return a `ConfigSource` enum to clearly define the possible source types
     fn load_system_config(&self) -> Result<Option<ConfigSource>>;
     fn load_user_config(&self) -> Result<Option<ConfigSource>>;
     fn load_local_config(&self) -> Result<Option<ConfigSource>>;
@@ -102,11 +104,12 @@ impl McpConfigLoader for DiskConfigLoader {
 
     fn load_system_config(&self) -> Result<Option<ConfigSource>> {
         let path = system_config_path();
-        match path {
-            Some(path) if path.exists() => Ok(Some(ConfigSource::FilePath(
+        if path.exists() {
+            Ok(Some(ConfigSource::FilePath(
                 File::from(path).required(false),
-            ))),
-            _ => Ok(None),
+            )))
+        } else {
+            Ok(None)
         }
     }
 
@@ -144,18 +147,6 @@ impl McpReplConfig {
             FileFormat::Toml,
         ));
 
-        // Helper function to add a config source to the builder
-        fn add_config_source(
-            builder: config::ConfigBuilder<config::builder::DefaultState>,
-            source: Option<ConfigSource>,
-        ) -> config::ConfigBuilder<config::builder::DefaultState> {
-            match source {
-                Some(ConfigSource::FilePath(file)) => builder.add_source(file),
-                Some(ConfigSource::FileContent(file)) => builder.add_source(file),
-                None => builder,
-            }
-        }
-
         builder = add_config_source(builder, loader.load_system_config()?);
         builder = add_config_source(builder, loader.load_user_config()?);
         builder = add_config_source(builder, loader.load_local_config()?);
@@ -167,23 +158,30 @@ impl McpReplConfig {
         // Build the config
         let result = match builder.build() {
             Ok(config) => {
-                println!("{:#?}", config);
+                log::debug!("{config:#?}");
                 Ok(config.try_deserialize()?)
             }
             Err(e) => return Err(anyhow::anyhow!("Config error: {}", e)),
         };
-        println!("result: {:#?}", result);
+        log::debug!("result: {result:#?}");
         result
-    }
-
-    /// Find a server by name
-    pub fn find_server(&self, name: &str) -> Option<&McpConnectionType> {
-        self.servers.get(name)
     }
 }
 
-fn system_config_path() -> Option<PathBuf> {
-    Some(PathBuf::from("/etc/mcp-repl/config.toml"))
+// Helper function to add a config source to the builder
+fn add_config_source(
+    builder: config::ConfigBuilder<config::builder::DefaultState>,
+    source: Option<ConfigSource>,
+) -> config::ConfigBuilder<config::builder::DefaultState> {
+    match source {
+        Some(ConfigSource::FilePath(file)) => builder.add_source(file),
+        Some(ConfigSource::FileContent(file)) => builder.add_source(file),
+        None => builder,
+    }
+}
+
+fn system_config_path() -> PathBuf {
+    PathBuf::from("/etc/mcp-repl/config.toml")
 }
 
 fn user_config_path() -> Option<PathBuf> {
@@ -191,11 +189,12 @@ fn user_config_path() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+/// We're not going to use the real environment for testing, but rather
+/// create a test configuration loader that simulates files and environment
 mod tests {
-    ///! We're not going to use the real environment for testing, but rather
-    ///! create a test configuration loader that simulates files and environment
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     struct TestConfigLoader {
         env: IndexMap<String, String>,

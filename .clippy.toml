@@ -1,0 +1,5 @@
+disallowed-macros = [
+    { path = "std::eprintln", reason = "Use the log crate instead" },
+    { path = "std::println", reason = "Use the log crate instead" },
+    { path = "todo_by::todo_by", reason = "Don't check in TODOs" },
+]

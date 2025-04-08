@@ -1,24 +1,26 @@
-use crate::commands::help::McpHelpCommand;
-use crate::config::McpReplConfig;
-use crate::engine::get_mcp_client_manager;
+use std::{collections::HashMap, sync::Arc, time::Instant};
+
 use anyhow::{Context, Result};
+use async_lock::{Mutex, OnceCell};
 use log::{debug, info};
 use nu_cmd_lang::create_default_context;
-use nu_protocol::engine::{EngineState, Stack, StateWorkingSet};
-use nu_protocol::{Config, HistoryConfig, HistoryFileFormat, Span, Value};
-use once_cell::sync::Lazy;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Instant;
+use nu_protocol::{
+    Config, HistoryConfig, HistoryFileFormat, Span, Value,
+    engine::{EngineState, Stack, StateWorkingSet},
+};
+use tokio::runtime::Runtime;
+
+use crate::{
+    commands::help::McpHelpCommand, config::McpReplConfig, engine::get_mcp_client_manager,
+};
 
 // Define a static variable to hold our custom history path
-static HISTORY_PATH: Lazy<std::sync::Mutex<Option<String>>> =
-    Lazy::new(|| std::sync::Mutex::new(None));
+static HISTORY_PATH: OnceCell<Mutex<Option<String>>> = OnceCell::new();
 
 // Import Nushell's help commands directly
 use crate::commands::builtin::add_shell_command_context;
 
-/// McpRepl integrates Nushell with the MCP functionality
+/// `McpRepl` integrates Nushell with the MCP functionality
 pub struct McpRepl {
     /// Nushell engine state
     engine_state: EngineState,
@@ -33,8 +35,10 @@ impl McpRepl {
         let mut engine_state = create_default_context();
 
         // Create a minimalist configuration
-        let mut config = Config::default();
-        config.show_banner = Value::bool(false, Span::unknown());
+        let mut config = Config {
+            show_banner: Value::bool(false, Span::unknown()),
+            ..Default::default()
+        };
 
         // Initialize hooks with empty values - don't set to None
         config.hooks.display_output = None;
@@ -146,18 +150,21 @@ impl McpRepl {
         working_set.add_decl(Box::new(McpHelpCommand));
         let delta = working_set.render();
         if let Err(err) = engine_state.merge_delta(delta) {
-            log::warn!("Error registering custom help command: {:?}", err);
+            log::warn!("Error registering custom help command: {err:?}");
         }
     }
 
     pub async fn register(&mut self, config: &McpReplConfig) -> Result<()> {
-        let mut manager = get_mcp_client_manager();
-
         for (name, server) in &config.servers {
-            log::info!("Registering MCP client: {}", name);
+            crate::info!("Registering MCP client: {name}");
             let client = server.to_client(name).await?;
-            manager.register_client(name.clone(), client, &mut self.engine_state)?;
+            get_mcp_client_manager().await.register_client(
+                name.clone(),
+                &client,
+                &mut self.engine_state,
+            )?;
         }
+
         Ok(())
     }
 
@@ -190,23 +197,29 @@ impl McpRepl {
 
         // Use a custom history file
         let history_file = mcp_repl_dir.join("history.txt");
-        info!("Using custom history file: {:?}", history_file);
+        info!("Using custom history file: {}", history_file.display());
 
         // The history file path will be used in custom configuration
 
         // Create a custom history configuration
-        let mut history_config = HistoryConfig::default();
-        history_config.file_format = HistoryFileFormat::Plaintext;
-        history_config.max_size = 100000; // Reasonable history size limit
-        history_config.sync_on_enter = true; // Save history immediately after each command
-        history_config.isolation = true; // Ensure MCP REPL history is isolated from standard Nushell history
-        
+        let history_config = HistoryConfig {
+            file_format: HistoryFileFormat::Plaintext,
+            max_size: 100_000,   // Reasonable history size limit
+            sync_on_enter: true, // Save history immediately after each command
+            isolation: true, // Ensure MCP REPL history is isolated from standard Nushell history
+        };
+
         // Store the history file path for reference and debug it
-        debug!("Custom MCP history file set at: {:?}", history_file);
-        
+        debug!("Custom MCP history file set at: {}", history_file.display());
+
         // Update the history path in the static
-        let mut history_path = HISTORY_PATH.lock().unwrap();
-        *history_path = Some(history_file.to_string_lossy().to_string());
+        let rt = Runtime::new()?;
+        let history_path = rt.block_on(async {
+            HISTORY_PATH
+                .get_or_init(|| async { Mutex::new(None) })
+                .await
+        });
+        *history_path.lock_blocking() = Some(history_file.to_string_lossy().to_string());
 
         Ok(history_config)
     }

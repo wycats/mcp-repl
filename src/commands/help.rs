@@ -1,17 +1,16 @@
 use nu_command::{HelpAliases, HelpCommands, HelpModules};
-use nu_engine::CallExt;
-use nu_engine::command_prelude::Call;
-use nu_protocol::engine::{Command, EngineState, Stack};
+use nu_engine::{CallExt, command_prelude::Call};
 use nu_protocol::{
     Category, Example, IntoPipelineData, PipelineData, ShellError, Signature, Span, Spanned,
     SyntaxShape, Type, Value,
+    engine::{Command, EngineState, Stack},
 };
 
 #[derive(Clone)]
 pub struct McpHelpCommand;
 
 impl Command for McpHelpCommand {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "help"
     }
 
@@ -32,11 +31,11 @@ impl Command for McpHelpCommand {
             .category(Category::Core)
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Display help information about different parts of Nushell."
     }
 
-    fn extra_description(&self) -> &str {
+    fn extra_description(&self) -> &'static str {
         r#"`help word` searches for "word" in commands, aliases and modules, in that order."#
     }
 
@@ -52,28 +51,25 @@ impl Command for McpHelpCommand {
         let rest: Vec<Spanned<String>> = call.rest(engine_state, stack, 0)?;
 
         if rest.is_empty() && find.is_none() {
-            let msg = r#"Welcome to Couchbase Shell, powered by Nushell. Shell Yeah!
+            let msg = r#"Welcome to MCP Shell, powered by Nushell. Shell Yeah!
 
         Here are some tips to help you get started.
           * help commands - list all available commands
           * help <command name> - display help about a particular command
-          * help commands | where category == "couchbase" - list all available Couchbase specific commands
+          * help commands | where category == "mcp" - list all available MCP specific commands
 
         Nushell works on the idea of a "pipeline". Pipelines are commands connected with the '|' character.
         Each stage in the pipeline works together to load, parse, and display information to you.
 
         [Examples]
 
-        List the files in the current directory, sorted by size:
-            ls | sort-by size
+        List all available MCP tools:
+            tool list
 
-        Get all of the buckets of type couchbase in your active cluster:
-            buckets | where type == couchbase
+        Call a specific MCP tool:
+            tool fs.read_file Cargo.toml | from toml
 
-        Open a JSON file, transform the data, and upsert it into your active bucket:
-            open mydoc.json | wrap content | insert id {echo $it.content.airportname} | doc upsert
-
-        You can also learn more at https://couchbase.sh/docs/ and https://www.nushell.sh/book/"#;
+        You can also learn more at https://github.com/wycats/mcp-repl and https://www.nushell.sh/book/"#;
 
             Ok(Value::string(msg, head).into_pipeline_data())
         } else if find.is_some() {

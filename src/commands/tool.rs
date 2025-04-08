@@ -1,19 +1,18 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use nu_engine::CallExt;
 use nu_protocol::{
-    Category, IntoPipelineData, PipelineData, ShellError, Signature, Type, Value,
+    Category, IntoPipelineData, PipelineData, ShellError, Signature, Span, Type, Value,
     engine::{Call, Command, EngineState, Stack, StateWorkingSet},
 };
-use std::sync::Arc;
-
-use crate::commands::utils::{self};
-
-/// Command for dynamic tool usage
+use tokio::runtime::Runtime;
+// Command for dynamic tool usage
 #[derive(Clone)]
 pub struct ToolCommand;
 
 impl Command for ToolCommand {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "tool"
     }
 
@@ -23,11 +22,11 @@ impl Command for ToolCommand {
             .input_output_types(vec![(Type::Nothing, Type::String)])
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Various commands for interacting with MCP tools"
     }
 
-    fn extra_description(&self) -> &str {
+    fn extra_description(&self) -> &'static str {
         "You must use one of the following subcommands. Using this command as-is will only produce this help message."
     }
 
@@ -48,64 +47,12 @@ impl Command for ToolCommand {
     }
 }
 
-// Implementation of ToolCommand methods
-impl ToolCommand {
-    // Helper method to list all dynamic commands
-    fn list_dynamic_commands(
-        &self,
-        engine_state: &EngineState,
-        _stack: &mut Stack,
-        call: &Call,
-    ) -> Result<PipelineData, ShellError> {
-        match utils::get_command_registry() {
-            Ok(registry) => {
-                if let Ok(registry_guard) = registry.lock() {
-                    let commands = registry_guard.get_command_names();
-                    let mut values = Vec::new();
-
-                    for (idx, name) in commands.iter().enumerate() {
-                        if let Some(cmd_info) = registry_guard.get_command_info(name) {
-                            // Get the declaration by ID
-                            let decl = engine_state.get_decl(cmd_info.decl_id);
-                            let mut record = nu_protocol::Record::new();
-                            record.push("#", Value::int(idx as i64, call.head));
-                            record.push("name", Value::string(name, call.head));
-                            record
-                                .push("description", Value::string(decl.description(), call.head));
-                            record.push("category", Value::string("dynamic", call.head));
-
-                            values.push(Value::record(record, call.head));
-                        }
-                    }
-
-                    Ok(Value::list(values, call.head).into_pipeline_data())
-                } else {
-                    Err(ShellError::GenericError {
-                        error: "Registry lock failed".into(),
-                        msg: "Could not access the dynamic command registry".into(),
-                        span: Some(call.head),
-                        help: None,
-                        inner: vec![],
-                    })
-                }
-            }
-            Err(e) => Err(ShellError::GenericError {
-                error: "Registry error".into(),
-                msg: e.to_string(),
-                span: Some(call.head),
-                help: None,
-                inner: vec![],
-            }),
-        }
-    }
-}
-
 /// Command to list all available dynamic commands
 #[derive(Clone)]
 pub struct ToolListCommand;
 
 impl Command for ToolListCommand {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "tool list"
     }
 
@@ -120,11 +67,11 @@ impl Command for ToolListCommand {
             .input_output_types(vec![(Type::Any, Type::Table(vec![].into()))])
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List available dynamic commands"
     }
 
-    fn extra_description(&self) -> &str {
+    fn extra_description(&self) -> &'static str {
         "Display a list of all registered dynamic commands"
     }
 
@@ -136,11 +83,11 @@ impl Command for ToolListCommand {
         _input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
         // Use our new implementation that lists only tool namespace commands
-        crate::commands::dynamic_commands::dynamic_tool_commands::list_tool_commands(
+        Ok(list_tool_commands(
             engine_state,
             call,
             call.get_flag_span(stack, "protocol"),
-        )
+        ))
     }
 }
 
@@ -150,12 +97,7 @@ pub fn register_dynamic_tool(
     name: &str,
     signature: Signature,
     description: String,
-    run_fn: Box<
-        dyn Fn(&EngineState, &mut Stack, &Call, PipelineData) -> Result<PipelineData, ShellError>
-            + Send
-            + Sync
-            + 'static,
-    >,
+    run_fn: Box<RunFn>,
 ) {
     // Create a dynamic command that wraps the function
     let command = DynamicToolCommand {
@@ -169,18 +111,18 @@ pub fn register_dynamic_tool(
     working_set.add_decl(Box::new(command));
 }
 
+pub type RunFn = dyn Fn(&EngineState, &mut Stack, &Call, PipelineData) -> Result<PipelineData, ShellError>
+    + Send
+    + Sync
+    + 'static;
+
 /// A command that wraps a function for dynamic execution
 #[derive(Clone)]
 struct DynamicToolCommand {
     name: String,
     signature: Signature,
     description: String,
-    run_fn: Arc<
-        dyn Fn(&EngineState, &mut Stack, &Call, PipelineData) -> Result<PipelineData, ShellError>
-            + Send
-            + Sync
-            + 'static,
-    >,
+    run_fn: Arc<RunFn>,
 }
 
 impl Command for DynamicToolCommand {
@@ -201,8 +143,80 @@ impl Command for DynamicToolCommand {
         engine_state: &EngineState,
         stack: &mut Stack,
         call: &Call,
-        _input: PipelineData,
+        input: PipelineData,
     ) -> Result<PipelineData, ShellError> {
-        (self.run_fn)(engine_state, stack, call, _input)
+        (self.run_fn)(engine_state, stack, call, input)
     }
+}
+
+use crate::{engine::EngineStateExt, util::format::json_to_nu};
+
+/// List all commands under the tool namespace
+///
+/// # Panics
+///
+/// Panics if the runtime cannot be initialized
+pub fn list_tool_commands(
+    engine_state: &EngineState,
+    call: &Call,
+    protocol: Option<Span>,
+) -> PipelineData {
+    // Get the registered tools from the MCP client manager
+    let rt = Runtime::new().unwrap();
+
+    let client_manager = rt.block_on(engine_state.get_mcp_client_manager());
+    let servers = client_manager.get_servers();
+
+    let mut values = Vec::new();
+    let mut idx = 0;
+
+    // Create a record for each registered tool
+    for (client_name, server) in servers {
+        for (tool_name, registered_tool) in &server.tools {
+            let tool = &registered_tool.tool;
+            let mut record = nu_protocol::Record::new();
+
+            record.push("#", Value::int(i64::from(idx), call.head));
+            idx += 1;
+
+            // Add the client name for filtering/grouping
+            record.push("client", Value::string(client_name.clone(), call.head));
+
+            // The fully qualified tool name (client.tool format)
+            record.push("name", Value::string(tool_name, call.head));
+
+            // Add description if available
+            if let Some(desc) = &tool.description {
+                record.push("description", Value::string(desc.clone(), call.head));
+            } else {
+                record.push("description", Value::string("", call.head));
+            }
+
+            if let Some(protocol) = protocol {
+                record.push(
+                    "protocol",
+                    json_to_nu(&tool.schema_as_json_value(), Some(protocol)),
+                );
+            }
+
+            values.push(Value::record(record, call.head));
+        }
+    }
+
+    drop(client_manager);
+
+    if values.is_empty() {
+        // Add a message when no tools are found
+        let mut record = nu_protocol::Record::new();
+        record.push(
+            "message",
+            Value::string(
+                "No registered MCP tools found. Try connecting to an MCP server first.",
+                call.head,
+            ),
+        );
+        values.push(Value::record(record, call.head));
+    }
+
+    Value::list(values, call.head).into_pipeline_data()
 }

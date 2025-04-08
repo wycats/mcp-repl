@@ -1,12 +1,13 @@
-use anyhow::Result;
 use log::trace;
 use nu_engine::CallExt;
 use nu_protocol::{
-    Category, Signature, SyntaxShape, Type,
+    Category, Signature, SyntaxShape,
     engine::{EngineState, Stack},
 };
 use rmcp::model::Tool;
 use serde_json::Value as JsonValue;
+
+use crate::util::error::McpResult;
 
 /// Maps an MCP tool to a Nushell command signature
 /// Following the mapping strategy in MAPPING.md:
@@ -15,7 +16,7 @@ use serde_json::Value as JsonValue;
 /// 3. If the tool has exactly one or two required parameters and all of the rest of the arguments are optional, map the required parameters onto positional arguments and the optional parameters onto flags.
 /// 4. Optional parameters that are booleans should be mapped to switches (e.g., `--verbose`).
 /// 5. All other optional parameters should be mapped to flags (e.g., `--limit 10`).
-pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
+pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Signature {
     let name = tool.name.to_string();
 
     // DEBUG: Output the raw schema for inspection
@@ -39,13 +40,7 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
         // Identify required and optional parameters
         let required_params: Vec<(String, JsonValue)> = prop_vec
             .iter()
-            .filter(|(name, _)| is_parameter_required(tool, name).unwrap_or(false))
-            .map(|(name, schema)| (name.clone(), schema.clone()))
-            .collect();
-
-        let optional_params: Vec<(String, JsonValue)> = prop_vec
-            .iter()
-            .filter(|(name, _)| !is_parameter_required(tool, name).unwrap_or(true))
+            .filter(|(name, _)| is_parameter_required(tool, name))
             .map(|(name, schema)| (name.clone(), schema.clone()))
             .collect();
 
@@ -57,13 +52,13 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
         } else if required_params.len() == 2 {
             // Rule 2: If exactly two required parameters, make them positional
             2
-        } else if required_params.len() == 1 && !optional_params.is_empty() {
-            // Rule 3: If exactly one required parameter and rest are optional,
-            // make the required one positional
-            1
         } else {
-            // Default to no positional parameters for other cases
-            0
+            usize::from(
+                required_params.len() == 1
+                    && prop_vec
+                        .iter()
+                        .any(|(name, _)| !is_parameter_required(tool, name)),
+            )
         };
 
         // Process positional parameters first based on our rules
@@ -88,13 +83,13 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
 
             // Get parameter description
             let description = get_parameter_description(param_schema)
-                .unwrap_or_else(|| format!("{} parameter", param_name));
+                .unwrap_or_else(|| format!("{param_name} parameter"));
 
             // Determine parameter type/shape
-            let syntax_shape = map_json_schema_to_syntax_shape(param_schema)?;
+            let syntax_shape = map_json_schema_to_syntax_shape(param_schema);
 
             // Determine if parameter is required or optional
-            let is_required = is_parameter_required(tool, param_name)?;
+            let is_required = is_parameter_required(tool, param_name);
 
             if is_required {
                 // Add as required positional parameter
@@ -123,13 +118,13 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
                     // If no description found, extract useful information from schema
                     extract_useful_schema_info(&param_schema, &param_name)
                 })
-                .unwrap_or_else(|| format!("{} parameter", param_name));
+                .unwrap_or_else(|| format!("{param_name} parameter"));
 
             // Determine parameter type/shape
-            let syntax_shape = map_json_schema_to_syntax_shape(&param_schema)?;
+            let syntax_shape = map_json_schema_to_syntax_shape(&param_schema);
 
             // Determine if parameter is required
-            let is_required = is_parameter_required(tool, &param_name)?;
+            let is_required = is_parameter_required(tool, &param_name);
 
             // Handle boolean parameters as switches if optional
             if !is_required && is_boolean_parameter(&param_schema) {
@@ -155,7 +150,7 @@ pub fn map_tool_to_signature(tool: &Tool, category: &str) -> Result<Signature> {
         }
     }
 
-    Ok(signature)
+    signature
 }
 
 /// Check if a parameter is a boolean type
@@ -182,22 +177,22 @@ fn get_schema_properties(tool: &Tool) -> Option<serde_json::Map<String, JsonValu
 }
 
 /// Check if a parameter is required in the JSON Schema
-fn is_parameter_required(tool: &Tool, param_name: &str) -> Result<bool> {
+fn is_parameter_required(tool: &Tool, param_name: &str) -> bool {
     let schema = tool.schema_as_json_value();
 
     if let JsonValue::Object(obj) = schema {
         if let Some(JsonValue::Array(required)) = obj.get("required") {
-            return Ok(required.iter().any(|value| {
+            return required.iter().any(|value| {
                 if let JsonValue::String(name) = value {
                     name == param_name
                 } else {
                     false
                 }
-            }));
+            });
         }
     }
 
-    Ok(false)
+    false
 }
 
 /// Extract description from a parameter schema
@@ -236,23 +231,23 @@ fn extract_useful_schema_info(param_schema: &JsonValue, param_name: &str) -> Opt
 
         // Check if we have format information
         if let Some(JsonValue::String(format)) = obj.get("format") {
-            return Some(format!("{} in {} format", param_name, format));
+            return Some(format!("{param_name} in {format} format"));
         }
 
         // Check for pattern (regex)
         if let Some(JsonValue::String(pattern)) = obj.get("pattern") {
-            return Some(format!("Must match pattern: {}", pattern));
+            return Some(format!("Must match pattern: {pattern}"));
         }
 
         // Check for min/max constraints
         let mut constraints = Vec::new();
 
         if let Some(JsonValue::Number(min)) = obj.get("minimum") {
-            constraints.push(format!("min: {}", min));
+            constraints.push(format!("min: {min}"));
         }
 
         if let Some(JsonValue::Number(max)) = obj.get("maximum") {
-            constraints.push(format!("max: {}", max));
+            constraints.push(format!("max: {max}"));
         }
 
         if !constraints.is_empty() {
@@ -273,7 +268,7 @@ fn extract_useful_schema_info(param_schema: &JsonValue, param_name: &str) -> Opt
 }
 
 /// Map JSON Schema types to Nushell syntax shapes
-fn map_json_schema_to_syntax_shape(param_schema: &JsonValue) -> Result<SyntaxShape> {
+fn map_json_schema_to_syntax_shape(param_schema: &JsonValue) -> SyntaxShape {
     if let JsonValue::Object(obj) = param_schema {
         // Get the type field from the schema
         if let Some(JsonValue::String(type_str)) = obj.get("type") {
@@ -284,86 +279,65 @@ fn map_json_schema_to_syntax_shape(param_schema: &JsonValue) -> Result<SyntaxSha
                         // Use String for enums
                         // The parameter description will include detailed information
                         // about valid values for better documentation
-                        return Ok(SyntaxShape::String);
+                        return SyntaxShape::String;
                     }
 
                     // Check for format specifiers
                     if let Some(JsonValue::String(format)) = obj.get("format") {
                         match format.as_str() {
-                            "date-time" => return Ok(SyntaxShape::DateTime),
-                            "date" => return Ok(SyntaxShape::DateTime),
-                            "time" => return Ok(SyntaxShape::DateTime),
-                            "uri" => return Ok(SyntaxShape::String),
-                            "email" => return Ok(SyntaxShape::String),
-                            "uuid" => return Ok(SyntaxShape::String),
-                            _ => return Ok(SyntaxShape::String),
+                            "date" | "date-time" | "time" => return SyntaxShape::DateTime,
+                            _ => return SyntaxShape::String,
                         }
                     }
 
-                    return Ok(SyntaxShape::String);
+                    SyntaxShape::String
                 }
-                "number" => Ok(SyntaxShape::Number),
-                "integer" => Ok(SyntaxShape::Int),
-                "boolean" => Ok(SyntaxShape::Boolean),
+                "number" => SyntaxShape::Number,
+                "integer" => SyntaxShape::Int,
+                "boolean" => SyntaxShape::Boolean,
                 "array" => {
                     // Check if it has items specification
                     if let Some(items) = obj.get("items") {
-                        if let Ok(item_shape) = map_json_schema_to_syntax_shape(items) {
-                            // Use Table for complex types, List for simpler types
-                            match item_shape {
-                                SyntaxShape::Record(_) => {
-                                    // Create an empty Table syntax shape with no fields
-                                    return Ok(SyntaxShape::Table(Vec::new()));
-                                }
-                                _ => return Ok(SyntaxShape::List(Box::new(item_shape))),
+                        let item_shape = map_json_schema_to_syntax_shape(items);
+                        // Use Table for complex types, List for simpler types
+                        match item_shape {
+                            SyntaxShape::Record(_) => {
+                                // Create an empty Table syntax shape with no fields
+                                return SyntaxShape::Table(Vec::new());
                             }
+                            _ => return SyntaxShape::List(Box::new(item_shape)),
                         }
                     }
 
                     // Default to list of any
-                    Ok(SyntaxShape::List(Box::new(SyntaxShape::Any)))
+                    SyntaxShape::List(Box::new(SyntaxShape::Any))
                 }
                 "object" => {
                     // For objects with defined properties, use Record
                     if obj.contains_key("properties") {
-                        return Ok(SyntaxShape::Record(vec![]));
+                        return SyntaxShape::Record(vec![]);
                     }
 
                     // For generic objects, use Any
-                    Ok(SyntaxShape::Any)
+                    SyntaxShape::Any
                 }
-                "null" => Ok(SyntaxShape::Nothing),
-                _ => Ok(SyntaxShape::Any), // Default to Any for unknown types
+                "null" => SyntaxShape::Nothing,
+                _ => SyntaxShape::Any, // Default to Any for unknown types
             }
         } else if obj.contains_key("oneOf")
             || obj.contains_key("anyOf")
             || obj.contains_key("allOf")
         {
             // For complex schemas with oneOf/anyOf/allOf, default to Any
-            Ok(SyntaxShape::Any)
+            SyntaxShape::Any
         } else {
             // Default to Any if no type is specified
-            Ok(SyntaxShape::Any)
+            SyntaxShape::Any
         }
     } else {
         // Default to Any for non-object schemas
-        Ok(SyntaxShape::Any)
+        SyntaxShape::Any
     }
-}
-
-/// Generate a help description from an MCP tool
-pub fn generate_help_description(tool: &Tool) -> String {
-    match &tool.description {
-        Some(desc) => desc.to_string(),
-        None => format!("MCP tool: {}", tool.name),
-    }
-}
-
-/// Convert MCP tool parameters to a Nushell input_output_types specification
-pub fn generate_input_output_types(_tool: &Tool) -> Vec<(Type, Type)> {
-    // Most MCP tools take no pipeline input and return a string
-    // This is a simplification - could be enhanced with actual schema analysis
-    vec![(Type::Nothing, Type::String)]
 }
 
 /// Map Nushell values to JSON values for tool parameters
@@ -378,7 +352,7 @@ pub fn map_call_args_to_tool_params(
     stack: &mut Stack,
     call: &nu_protocol::engine::Call<'_>,
     tool: &Tool,
-) -> Result<serde_json::Map<String, JsonValue>> {
+) -> McpResult<serde_json::Map<String, JsonValue>> {
     let mut params = serde_json::Map::new();
     let span = call.head;
 
@@ -388,21 +362,15 @@ pub fn map_call_args_to_tool_params(
 
         // Sort properties so required ones are first (helps with positional args mapping)
         prop_vec.sort_by(|(name1, _), (name2, _)| {
-            let req1 = is_parameter_required(tool, name1).unwrap_or(false);
-            let req2 = is_parameter_required(tool, name2).unwrap_or(false);
+            let req1 = is_parameter_required(tool, name1);
+            let req2 = is_parameter_required(tool, name2);
             req2.cmp(&req1) // required first
         });
 
         // Identify required and optional parameters
         let required_params: Vec<(String, JsonValue)> = prop_vec
             .iter()
-            .filter(|(name, _)| is_parameter_required(tool, name).unwrap_or(false))
-            .map(|(name, schema)| (name.clone(), schema.clone()))
-            .collect();
-
-        let optional_params: Vec<(String, JsonValue)> = prop_vec
-            .iter()
-            .filter(|(name, _)| !is_parameter_required(tool, name).unwrap_or(true))
+            .filter(|(name, _)| is_parameter_required(tool, name))
             .map(|(name, schema)| (name.clone(), schema.clone()))
             .collect();
 
@@ -414,13 +382,13 @@ pub fn map_call_args_to_tool_params(
         } else if required_params.len() == 2 {
             // Rule 2: If exactly two required parameters, make them positional
             2
-        } else if required_params.len() == 1 && !optional_params.is_empty() {
-            // Rule 3: If exactly one required parameter and rest are optional,
-            // make the required one positional
-            1
         } else {
-            // Default to no positional parameters for other cases
-            0
+            usize::from(
+                required_params.len() == 1
+                    && prop_vec
+                        .iter()
+                        .any(|(name, _)| !is_parameter_required(tool, name)),
+            )
         };
 
         // Process positional parameters based on our rules
@@ -448,14 +416,14 @@ pub fn map_call_args_to_tool_params(
             };
 
             if let Ok(Some(value)) = value_result {
-                let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
+                let json_value = super::utils::convert_nu_value_to_json_value(&value, span)?;
                 params.insert(param_name.to_string(), json_value);
                 continue; // Skip to next parameter
             }
 
             // If not found as positional, try as flag (fallback)
-            if let Some(value) = call.get_flag(engine_state, stack, &param_name.to_string())? {
-                let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
+            if let Some(value) = call.get_flag(engine_state, stack, param_name)? {
+                let json_value = super::utils::convert_nu_value_to_json_value(&value, span)?;
                 params.insert(param_name.to_string(), json_value);
             }
         }
@@ -469,7 +437,7 @@ pub fn map_call_args_to_tool_params(
 
             // Process remaining parameters as flags
             if let Some(value) = call.get_flag(engine_state, stack, &param_name.to_string())? {
-                let json_value = super::call_tool::convert_nu_value_to_json_value(&value, span)?;
+                let json_value = super::utils::convert_nu_value_to_json_value(&value, span)?;
                 params.insert(param_name.to_string(), json_value);
             }
         }

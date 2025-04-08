@@ -1,25 +1,28 @@
+#![deny(missing_docs, unused)]
+//! MCP REPL for Nushell
+use std::env;
+
 use ::config::{Map, Source, Value};
 use anyhow::{Context, Result};
 use clap::Parser;
 use config::{McpConnectionType, McpReplConfig, parse_env};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::env;
 
-pub mod commands;
-pub mod config;
-pub mod engine;
-pub mod mcp;
-pub mod mcp_manager;
-pub mod shell;
-pub mod util;
+pub(crate) mod commands;
+pub(crate) mod config;
+pub(crate) mod engine;
+pub(crate) mod mcp;
+pub(crate) mod mcp_manager;
+pub(crate) mod shell;
+pub(crate) mod util;
 
 #[derive(Parser, Debug, Clone, Default)]
 #[clap(
     name = "nu-mcp-repl",
     about = "Nushell-based REPL for MCP (Model Context Protocol)"
 )]
-pub struct CliArgs {
+pub(crate) struct CliArgs {
     /// Enable verbose logging
     #[arg(short, long, env = "MCP_VERBOSE")]
     verbose: bool,
@@ -34,7 +37,7 @@ pub struct CliArgs {
 
 /// Type of MCP connection to establish
 #[derive(Clone, Debug, Deserialize, Serialize, clap::Parser)]
-pub enum ConnectionType {
+pub(crate) enum ConnectionType {
     /// SSE-based MCP server (HTTP Server-Sent Events)
     Sse { name: String, url: String },
     /// Command-based MCP server (launches a subprocess)
@@ -46,8 +49,8 @@ pub enum ConnectionType {
     },
 }
 
-fn to_value<'a>(value: impl Serialize + Deserialize<'a>) -> Value {
-    let stringify = serde_json::to_string(&value).unwrap();
+fn to_value<'a>(value: &(impl Serialize + Deserialize<'a>)) -> Value {
+    let stringify = serde_json::to_string(value).unwrap();
     let value: Value = serde_json::from_str(&stringify).unwrap();
     value
 }
@@ -61,7 +64,7 @@ impl Source for CliArgs {
                 ConnectionType::Sse { name, url } => {
                     servers.insert(
                         name.to_string(),
-                        to_value(McpConnectionType::Sse {
+                        to_value(&McpConnectionType::Sse {
                             url: url.to_string(),
                         }),
                     );
@@ -69,7 +72,7 @@ impl Source for CliArgs {
                 ConnectionType::Command { name, command, env } => {
                     servers.insert(
                         name.to_string(),
-                        to_value(McpConnectionType::Command {
+                        to_value(&McpConnectionType::Command {
                             command: command.to_string(),
                             env: env.clone(),
                         }),
@@ -106,14 +109,14 @@ fn main() -> Result<()> {
     let args = CliArgs::parse();
     let config = McpReplConfig::env(&args).context("Failed to load configuration")?;
 
-    println!("Args {:#?}", args);
+    log::trace!("Args {args:#?}");
 
     if args.verbose {
-        println!("Starting MCP REPL in verbose mode");
+        log::info!("Starting MCP REPL in verbose mode");
     }
 
     // Initialize the Nushell-based REPL
-    println!("Starting MCP Nushell REPL - Type 'exit' to quit");
+    log::info!("Starting MCP Nushell REPL - Type 'exit' to quit");
     let mut repl = shell::McpRepl::new().context("Failed to initialize MCP REPL shell")?;
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create runtime")?;
@@ -123,12 +126,12 @@ fn main() -> Result<()> {
 
     // Run the REPL and handle any errors
     match repl.run() {
-        Ok(_) => {
-            println!("MCP REPL session ended");
+        Ok(()) => {
+            log::debug!("MCP REPL session ended");
             Ok(())
         }
         Err(err) => {
-            println!("Error during REPL session: {}", err);
+            log::error!("Error during REPL session: {err}");
             Err(err)
         }
     }

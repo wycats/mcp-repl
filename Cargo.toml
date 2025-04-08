@@ -5,6 +5,9 @@ edition = "2024"
 resolver = "3"
 description = "A Nushell-based REPL for MCP (Model Context Protocol)"
 repository = "https://github.com/wycats/mcp-repl"
+license = "MIT"
+keywords = ["mcp", "repl", "nushell"]
+categories = ["development"]
 
 [dependencies]
 
@@ -46,3 +49,31 @@ config = { version = "0.15.11", features = ["indexmap", "preserve_order"] }
 serde = { version = "1.0.219", features = ["derive"] }
 envy = "0.4.2"
 derive-new = "0.7.0"
+async-lock = "3.4.0"
+async-once-cell = { version = "0.5.4", features = ["critical-section", "std"] }
+critical-section = { version = "1.2.0", features = ["std"] }
+todo_by = "0.3.0"
+nu-ansi-term = { version = "0.50.1", features = [
+    "derive_serde_style",
+    "serde",
+] }
+
+[lints.clippy]
+cargo = { level = "deny", priority = -1 }
+multiple_crate_versions = "allow"
+
+suspicious = { level = "deny", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+style = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+module_name_repetitions = "allow"
+literal_string_with_formatting_args = "allow"
+missing_errors_doc = "allow"
+disallowed-macros = "warn"
+print_stdout = "deny"
+print_stderr = "deny"
+panic_in_result_fn = "deny"
+too_many_lines = "allow"

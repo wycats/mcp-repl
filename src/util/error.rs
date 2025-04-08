@@ -1,7 +1,22 @@
-use nu_protocol::{IntoValue, ShellError, Span};
+use std::ops::Deref;
 
+use nu_protocol::{IntoValue, ShellError, Span, Value};
+
+#[derive(Debug, Clone)]
+pub struct McpError(Box<ShellError>);
+pub type McpResult<T> = Result<T, McpError>;
+
+impl Deref for McpError {
+    type Target = ShellError;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[must_use]
 pub fn result_to_val(
-    result: Result<nu_protocol::Value, ShellError>,
+    result: McpResult<nu_protocol::Value>,
     span: Option<Span>,
 ) -> nu_protocol::Value {
     match result {
@@ -10,17 +25,42 @@ pub fn result_to_val(
     }
 }
 
+impl IntoValue for McpError {
+    fn into_value(self, span: Span) -> Value {
+        IntoValue::into_value(*self.0, span)
+    }
+}
+
+impl From<ShellError> for McpError {
+    fn from(error: ShellError) -> Self {
+        Self(Box::new(error))
+    }
+}
+
+impl From<&ShellError> for McpError {
+    fn from(error: &ShellError) -> Self {
+        Self(Box::new(error.clone()))
+    }
+}
+
+impl From<&Box<ShellError>> for McpError {
+    fn from(error: &Box<ShellError>) -> Self {
+        Self(Box::new(error.as_ref().clone()))
+    }
+}
+
 pub fn generic_error(
     message: impl Into<String>,
     help: impl Into<Option<String>>,
     span: impl Into<Option<Span>>,
-) -> ShellError {
-    McpShellError::GenericError {
-        message: message.into(),
-        help: help.into(),
+) -> McpError {
+    McpError(Box::new(ShellError::GenericError {
+        error: message.into(),
+        msg: String::new(),
         span: span.into(),
-    }
-    .into()
+        help: help.into(),
+        inner: Vec::new(),
+    }))
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
@@ -51,7 +91,7 @@ fn spanned_shell_error(
 ) -> ShellError {
     ShellError::GenericError {
         error: msg.into(),
-        msg: "".to_string(),
+        msg: String::new(),
         span: span.into(),
         help: help.into(),
         inner: Vec::new(),

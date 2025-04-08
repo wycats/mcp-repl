@@ -1,3 +1,5 @@
+use std::{borrow::Cow, sync::Arc};
+
 use anyhow::{Context, Result, anyhow};
 use indexmap::IndexMap;
 use log::{debug, info, warn};
@@ -8,9 +10,6 @@ use rmcp::{
     transport::TokioChildProcess,
 };
 use serde_json::Value;
-use shell_words;
-use std::borrow::Cow;
-use std::sync::Arc;
 use tokio::process::Command;
 
 use crate::config::McpConnectionType;
@@ -20,8 +19,8 @@ use crate::config::McpConnectionType;
 pub struct McpClient {
     client: Arc<RunningService<RoleClient, ClientInfo>>,
     tools: Vec<Tool>,
-    resources: Vec<Resource>,
-    templates: Vec<ResourceTemplate>,
+    _resources: Vec<Resource>,
+    _templates: Vec<ResourceTemplate>,
     debug: bool,
 }
 
@@ -31,11 +30,11 @@ impl McpClient {
         // Initialize the MCP client based on the connection type
         let client = match connection_type {
             McpConnectionType::Sse { url } => {
-                info!("Connecting via SSE: {}", url);
+                info!("Connecting via SSE: {url}");
                 Self::build_sse_client(&url).await?
             }
             McpConnectionType::Command { command, env } => {
-                info!("Connecting via command: {}", command);
+                info!("Connecting via command: {command}");
                 Self::build_command_client(&command, &env.unwrap_or_default()).await?
             }
         };
@@ -48,10 +47,7 @@ impl McpClient {
         let has_tools = server_capabilities.tools.as_ref().is_some();
         let has_resources = server_capabilities.resources.as_ref().is_some();
 
-        info!(
-            "Server capabilities - Tools: {}, Resources: {}",
-            has_tools, has_resources
-        );
+        info!("Server capabilities - Tools: {has_tools}, Resources: {has_resources}");
 
         // Load tools if supported
         let tools = if has_tools {
@@ -61,7 +57,7 @@ impl McpClient {
                     tools
                 }
                 Err(e) => {
-                    warn!("Failed to load tools: {}", e);
+                    warn!("Failed to load tools: {e}");
                     Vec::new()
                 }
             }
@@ -77,7 +73,7 @@ impl McpClient {
                     resources
                 }
                 Err(e) => {
-                    warn!("Failed to load resources: {}", e);
+                    warn!("Failed to load resources: {e}");
                     Vec::new()
                 }
             }
@@ -93,7 +89,7 @@ impl McpClient {
                     templates
                 }
                 Err(e) => {
-                    warn!("Failed to load templates: {}", e);
+                    warn!("Failed to load templates: {e}");
                     Vec::new()
                 }
             }
@@ -104,23 +100,11 @@ impl McpClient {
         // Create the client instance with the loaded data
         Ok(Self {
             client: Arc::new(client),
-            tools,     // Store the tools we loaded
-            resources, // Store the resources we loaded
-            templates, // Store the templates we loaded
+            tools,                 // Store the tools we loaded
+            _resources: resources, // Store the resources we loaded
+            _templates: templates, // Store the templates we loaded
             debug,
         })
-    }
-
-    /// Create a new MCP client synchronously (to be used at startup, not in a runtime)
-    /// This is a separate method to avoid accidental nested runtime issues
-    pub fn connect_sync(
-        connection_type: McpConnectionType,
-        debug: bool,
-        runtime: &tokio::runtime::Runtime,
-    ) -> Result<Self> {
-        // Use the provided runtime to connect - this should only be called from a context
-        // that is not already inside a runtime execution context
-        runtime.block_on(Self::connect(connection_type, debug))
     }
 
     /// Build an SSE-based MCP client
@@ -211,7 +195,7 @@ impl McpClient {
 
         // Log the command being executed
         info!("Starting command: {}", shell_words::join(all_args));
-        debug!("Command details: {:#?}", command);
+        debug!("Command details: {command:#?}");
 
         let process =
             TokioChildProcess::new(&mut command).context("Failed to start command process")?;
@@ -240,57 +224,17 @@ impl McpClient {
         Ok(client)
     }
 
-    /// Refresh all data from the MCP server
-    pub async fn refresh_data(&mut self) -> Result<()> {
-        // Refresh tools and resources
-        self.refresh_tools().await?;
-        self.refresh_resources().await?;
-
-        Ok(())
-    }
-
-    /// Refresh the list of tools from the MCP server
-    async fn refresh_tools(&mut self) -> Result<()> {
-        // Check server capabilities
-        let server_info = self.client.peer_info();
-        let server_capabilities = &server_info.capabilities;
-
-        // Only fetch tools if the server supports them
-        if let Some(_) = server_capabilities.tools.as_ref() {
-            self.tools = self.client.list_all_tools().await?;
-        }
-
-        Ok(())
-    }
-
-    /// Refresh the list of resources from the MCP server
-    async fn refresh_resources(&mut self) -> Result<()> {
-        // Check server capabilities
-        let server_info = self.client.peer_info();
-        let server_capabilities = &server_info.capabilities;
-
-        // Only fetch resources if the server supports them
-        if let Some(_) = server_capabilities.resources.as_ref() {
-            self.resources = self.client.list_all_resources().await?;
-        }
-
-        Ok(())
-    }
-
-    /// Get server information
-    pub fn server_info(&self) -> Result<String> {
-        let server_info = self.client.peer_info();
-        Ok(format!("{:?}", server_info))
-    }
-
     /// Get all available MCP tools
+    #[must_use]
     pub fn get_tools(&self) -> &[Tool] {
         &self.tools
     }
 
     /// Get all available MCP resources
+    #[must_use]
+    #[allow(clippy::used_underscore_binding, dead_code)]
     pub fn get_resources(&self) -> &[Resource] {
-        &self.resources
+        &self._resources
     }
 
     /// Call an MCP tool with the provided parameters
@@ -307,7 +251,7 @@ impl McpClient {
             // Use Nushell formatting for the request parameters
             let nu_formatted = crate::util::format::format_json_as_nu(&params, None);
 
-            info!("MCP REQUEST to '{}':\n{}", tool_name, nu_formatted);
+            info!("MCP REQUEST to '{tool_name}':\n{nu_formatted}");
         }
 
         // Call the tool with the parameters
@@ -326,7 +270,7 @@ impl McpClient {
             let response_value = serde_json::to_value(&result).unwrap_or_default();
             let nu_formatted = crate::util::format::format_json_as_nu(&response_value, None);
 
-            info!("MCP RESPONSE from '{}':\n{}", tool_name, nu_formatted);
+            info!("MCP RESPONSE from '{tool_name}':\n{nu_formatted}");
         }
 
         Ok(result.content)

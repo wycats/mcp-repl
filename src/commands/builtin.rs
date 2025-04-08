@@ -1,5 +1,36 @@
 use log::warn;
-use nu_command::*;
+use nu_command::{
+    All, Any, Append, Ast, Bytes, BytesAdd, BytesAt, BytesBuild, BytesCollect, BytesEndsWith,
+    BytesIndexOf, BytesLen, BytesRemove, BytesReplace, BytesReverse, BytesSplit, BytesStartsWith,
+    Cal, Char, ChunkBy, Chunks, Columns, Compact, ConfigEnv, ConfigFlatten, ConfigMeta, ConfigNu,
+    ConfigReset, ConfigUseColors, Date, DateFormat, DateHumanize, DateListTimezones, DateNow,
+    DateToTimezone, Debug, DebugInfo, DebugProfile, Decode, DecodeBase32, DecodeBase32Hex,
+    DecodeBase64, DecodeHex, Default, DetectColumns, Drop, DropColumn, DropNth, Each, Encode,
+    EncodeBase32, EncodeBase32Hex, EncodeBase64, EncodeHex, Enumerate, Every, Exit, Explain,
+    ExportEnv, Fill, Filter, Find, First, Flatten, Format, FormatDate, FormatDuration,
+    FormatFilesize, From, FromCsv, FromJson, FromMsgpack, FromMsgpackz, FromNuon, FromOds, FromSsv,
+    FromToml, FromTsv, FromXlsx, FromXml, FromYaml, FromYml, Generate, Get, Griddle, GroupBy, Hash,
+    HashMd5, HashSha256, Headers, Help, HelpAliases, HelpCommands, HelpEscapes, HelpExterns,
+    HelpModules, HelpOperators, HelpPipeAndRedirect, Histogram, Http, HttpDelete, HttpGet,
+    HttpHead, HttpOptions, HttpPatch, HttpPost, HttpPut, Insert, Inspect, Interleave, Into,
+    IntoBinary, IntoBool, IntoCellPath, IntoDatetime, IntoDuration, IntoFilesize, IntoFloat,
+    IntoGlob, IntoInt, IntoRecord, IntoString, IntoValue, IsAdmin, IsEmpty, IsNotEmpty, Items, Job,
+    JobKill, JobList, JobSpawn, Join, Last, Length, LetEnv, Lines, LoadEnv, Math, MathAbs, MathAvg,
+    MathCeil, MathFloor, MathLog, MathMax, MathMedian, MathMin, MathMode, MathProduct, MathRound,
+    MathSqrt, MathStddev, MathSum, MathVariance, Merge, MergeDeep, Metadata, MetadataAccess,
+    MetadataSet, Move, Panic, ParEach, Parse, Path, PathBasename, PathDirname, PathExists,
+    PathExpand, PathJoin, PathParse, PathRelativeTo, PathSelf, PathSplit, PathType, Prepend,
+    Random, RandomBinary, RandomBool, RandomChars, RandomDice, RandomFloat, RandomInt, RandomUuid,
+    Reduce, Reject, Rename, Reverse, Select, Seq, SeqChar, SeqDate, Shuffle, Skip, SkipUntil,
+    SkipWhile, Slice, Sort, SortBy, Source, SourceEnv, Split, SplitCellPath, SplitChars,
+    SplitColumn, SplitList, SplitRow, SplitWords, Str, StrCapitalize, StrContains, StrDistance,
+    StrDowncase, StrEndswith, StrExpand, StrIndexOf, StrJoin, StrLength, StrReplace, StrReverse,
+    StrStartsWith, StrStats, StrSubstring, StrTrim, StrUpcase, Table, Take, TakeUntil, TakeWhile,
+    Tee, TimeIt, To, ToCsv, ToJson, ToMd, ToMsgpack, ToMsgpackz, ToNuon, ToText, ToToml, ToTsv,
+    ToXml, ToYaml, ToYml, Transpose, Tutor, Uniq, UniqBy, Update, Upsert, Url, UrlBuildQuery,
+    UrlDecode, UrlEncode, UrlJoin, UrlParse, UrlSplitQuery, Values, View, ViewBlocks, ViewFiles,
+    ViewIr, ViewSource, ViewSpan, Where, Window, WithEnv, Wrap, Zip,
+};
 use nu_protocol::engine::{EngineState, StateWorkingSet};
 
 pub fn add_shell_command_context(mut engine_state: EngineState) -> EngineState {
@@ -382,7 +413,7 @@ pub fn add_shell_command_context(mut engine_state: EngineState) -> EngineState {
     }
 
     // Cache the table decl id so we don't have to look it up later
-    let table_decl_id = engine_state.find_decl("table".as_bytes(), &[]);
+    let table_decl_id = engine_state.find_decl(b"table", &[]);
     engine_state.table_decl_id = table_decl_id;
 
     engine_state

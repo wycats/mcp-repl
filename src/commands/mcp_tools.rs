@@ -1,31 +1,28 @@
-use std::borrow::Cow;
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use indexmap::IndexMap;
 use log::info;
-use nu_protocol::engine::{EngineState, Stack};
-use nu_protocol::{PipelineData, ShellError, Span, Value};
+use nu_protocol::{PipelineData, ShellError, Span, Value, engine::EngineState};
 use rmcp::model::Tool;
 use serde_json::Value as JsonValue;
 use tokio::runtime::Runtime;
 
-use crate::commands::tool::register_dynamic_tool;
-use crate::engine::EngineStateExt;
-use crate::mcp_manager::{RegisteredServer, RegisteredTool};
-use crate::util::format::{json_to_nu, json_to_nu_result};
+use super::{tool::RunFn, tool_mapper, utils::ReplClient};
+use crate::{
+    commands::tool::register_dynamic_tool,
+    mcp_manager::{RegisteredServer, RegisteredTool},
+    util::format::json_to_nu,
+};
 
-use super::tool_mapper;
-use super::utils::ReplClient;
-
-/// Register all MCP tools as Nushell commands using StateWorkingSet directly
+/// Register all MCP tools as Nushell commands using `StateWorkingSet` directly
 /// This allows us to register tools even from within a command that only has
-/// an immutable reference to EngineState
+/// an immutable reference to `EngineState`
 pub fn register_mcp_tools_in_working_set(
     name: &str,
     working_set: &mut nu_protocol::engine::StateWorkingSet,
     client: &Arc<ReplClient>,
-) -> Result<IndexMap<String, RegisteredTool>> {
+) -> IndexMap<String, RegisteredTool> {
     let tools = client.get_tools();
     let mut registered_tools = IndexMap::new();
 
@@ -42,7 +39,7 @@ pub fn register_mcp_tools_in_working_set(
         let raw_schema = serde_json::to_value(schema).unwrap_or(JsonValue::Null);
 
         // Register the tool as a command
-        register_mcp_tool_in_working_set(name, working_set, &tool, client)?;
+        register_mcp_tool_in_working_set(name, working_set, tool, client);
         registered_tools.insert(
             tool.name.to_string(),
             RegisteredTool {
@@ -55,10 +52,10 @@ pub fn register_mcp_tools_in_working_set(
         );
     }
 
-    Ok(registered_tools)
+    registered_tools
 }
 
-/// Register all MCP tools as Nushell commands using the standard approach with mutable EngineState
+/// Register all MCP tools as Nushell commands using the standard approach with mutable `EngineState`
 pub fn register_mcp_tools(
     name: &str,
     engine_state: &mut EngineState,
@@ -76,7 +73,7 @@ pub fn register_mcp_tools(
     // Use StateWorkingSet internally for consistency
     let mut working_set = nu_protocol::engine::StateWorkingSet::new(engine_state);
 
-    let registered_tools = register_mcp_tools_in_working_set(name, &mut working_set, client)?;
+    let registered_tools = register_mcp_tools_in_working_set(name, &mut working_set, client);
 
     // Apply the changes to the engine state
     let delta = working_set.render();
@@ -85,28 +82,27 @@ pub fn register_mcp_tools(
     Ok(RegisteredServer::new(client.clone(), registered_tools))
 }
 
-/// Register a single MCP tool as a Nushell command using StateWorkingSet
-/// This version works with an immutable EngineState reference by using StateWorkingSet
+/// Register a single MCP tool as a Nushell command using `StateWorkingSet`
+/// This version works with an immutable `EngineState` reference by using `StateWorkingSet`
 fn register_mcp_tool_in_working_set(
     mcp_namespace: &str,
     working_set: &mut nu_protocol::engine::StateWorkingSet,
     tool: &Tool,
     client: &Arc<ReplClient>,
-) -> Result<()> {
+) {
     // Get tool information
     let tool_name = tool.name.clone();
     let tool_description = tool.description.clone();
 
     // Create the namespaced C name
     // Format: "tool mcp_namespace.tool_name"
-    let namespaced_tool_name = format!("{}.{}", mcp_namespace, tool_name);
-    let command_name = format!("tool {}", namespaced_tool_name);
+    let namespaced_tool_name = format!("{mcp_namespace}.{tool_name}");
+    let command_name = format!("tool {namespaced_tool_name}");
 
     // Generate the command signature
-    let signature = tool_mapper::map_tool_to_signature(tool, "tool")
-        .context("Failed to map tool to signature")?;
+    let signature = tool_mapper::map_tool_to_signature(tool, "tool");
 
-    info!("Registering MCP tool as command: {}", command_name);
+    info!("Registering MCP tool as command: {command_name}");
 
     // Generate a help description from the tool
     let description = tool_description;
@@ -118,7 +114,7 @@ fn register_mcp_tool_in_working_set(
     // that follows the same pattern as super::tool::register_dynamic_tool
     // but works with StateWorkingSet
 
-    let desc_clone = description.clone().unwrap_or_else(|| Cow::Borrowed(""));
+    let desc_clone = description.clone().unwrap_or(Cow::Borrowed(""));
 
     // We need to create a Command implementation
     register_dynamic_tool(
@@ -128,25 +124,10 @@ fn register_mcp_tool_in_working_set(
         desc_clone.to_string(),
         run_fn,
     );
-
-    Ok(())
 }
 
 /// Create a run function for the MCP tool
-fn create_tool_run_function(
-    tool: Tool,
-    client: &Arc<ReplClient>,
-) -> Box<
-    dyn Fn(
-            &EngineState,
-            &mut Stack,
-            &nu_protocol::engine::Call<'_>,
-            PipelineData,
-        ) -> Result<PipelineData, ShellError>
-        + Send
-        + Sync
-        + 'static,
-> {
+fn create_tool_run_function(tool: Tool, client: &Arc<ReplClient>) -> Box<RunFn> {
     let client = client.clone();
     Box::new(move |engine_state, stack, call, _input| {
         let span = call.head;
@@ -208,9 +189,9 @@ fn create_tool_run_function(
             Err(err) => {
                 return Err(ShellError::GenericError {
                     error: "Failed to call MCP tool".into(),
-                    msg: format!("Channel error: {}", err),
+                    msg: format!("Channel error: {err}"),
                     span: Some(span),
-                    help: Some(format!("Error calling tool: {}", tool_name)),
+                    help: Some(format!("Error calling tool: {tool_name}")),
                     inner: Vec::new(),
                 });
             }
@@ -249,7 +230,7 @@ fn create_tool_run_function(
                                 } => {
                                     values.push(Value::string(text, span));
                                 }
-                                _ => {
+                                rmcp::model::ResourceContents::BlobResourceContents { .. } => {
                                     values
                                         .push(Value::string("[Resource: Non-text resource]", span));
                                 }

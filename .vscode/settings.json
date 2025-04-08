@@ -1,0 +1,19 @@
+{
+    "explorer.excludeGitIgnore": true,
+    "rust-analyzer.check.overrideCommand": [
+      "cargo",
+      "+nightly",
+      "clippy",
+      "--workspace",
+      "--message-format=json"
+  ],
+    "rust-analyzer.rustfmt.extraArgs": [
+      "+nightly"
+    ],
+    "rust-analyzer.checkOnSave": true,
+    "rust-analyzer.restartServerOnConfigChange": true,
+    "rust-analyzer.testExplorer": true,
+    "rust-analyzer.diagnostics.styleLints.enable": true,
+    "rust-analyzer.assist.emitMustUse": true,
+  
+}

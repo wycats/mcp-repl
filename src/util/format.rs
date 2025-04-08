@@ -1,57 +1,46 @@
-use nu_protocol::{IntoPipelineData, PipelineData, ShellError, Span, Value};
+use nu_protocol::{IntoPipelineData, PipelineData, Span, Value};
 use serde_json::Value as JsonValue;
 
 use super::error::result_to_val;
+use crate::{commands::utils::convert_json_value_to_nu_value, util::error::McpResult};
 
 /// Convert a JSON value to a Nushell value for pretty display
-pub fn json_to_nu_result(json: &JsonValue, span: Option<Span>) -> Result<Value, ShellError> {
-    crate::commands::call_tool::convert_json_value_to_nu_value(
-        json,
-        span.unwrap_or(Span::unknown()),
-    )
+pub fn json_to_nu_result(json: &JsonValue, span: Option<Span>) -> McpResult<Value> {
+    convert_json_value_to_nu_value(json, span.unwrap_or(Span::unknown()))
 }
 
 /// Convert a JSON value to a Nushell value for pretty display
+#[must_use]
 pub fn json_to_nu(json: &JsonValue, span: Option<Span>) -> Value {
     result_to_val(json_to_nu_result(json, span), span)
 }
 
 /// Format a JSON value as a string using Nushell's value rendering
+#[must_use]
 pub fn format_json_as_nu(json: &JsonValue, span: Option<Span>) -> String {
-    match json_to_nu_result(json, span) {
-        Ok(nu_value) => {
-            // Try to convert the value to a string using Nushell's own string representation
-            // In Nushell 0.103.0, use coerce_into_string which tries to represent any value as a string
-            match nu_value.clone().coerce_into_string() {
-                Ok(s) => s,
-                Err(_) => {
-                    // If direct conversion fails, try to use the actual value display logic
-                    // by going through into_pipeline_data which is what Nushell uses in the REPL
-                    match nu_value.clone().into_pipeline_data() {
-                        PipelineData::Value(val, ..) => {
-                            match val.coerce_into_string() {
-                                Ok(s) => s,
-                                Err(_) => format_nu_value(&nu_value), // Fallback to our custom formatter
-                            }
-                        }
-                        _ => format_nu_value(&nu_value),
-                    }
+    json_to_nu_result(json, span).map_or_else(
+        |_| format!("{json:#}"),
+        |nu_value| {
+            nu_value.clone().coerce_into_string().unwrap_or_else(|_| {
+                match nu_value.clone().into_pipeline_data() {
+                    PipelineData::Value(val, ..) => val
+                        .coerce_into_string()
+                        .unwrap_or_else(|_| format_nu_value(&nu_value)),
+                    _ => format_nu_value(&nu_value),
                 }
-            }
-        }
-        Err(_) => format!("{:#}", json), // Fallback to regular JSON formatting
-    }
+            })
+        },
+    )
 }
 
 /// Format a Nushell value as a string (fallback for simple values)
 pub fn format_nu_value(value: &Value) -> String {
     match value {
-        Value::String { val, .. } => format!("{}", val),
-        Value::Int { val, .. } => format!("{}", val),
-        Value::Float { val, .. } => format!("{}", val),
-        Value::Bool { val, .. } => format!("{}", val),
-        Value::Date { val, .. } => format!("{}", val),
-        Value::Duration { val, .. } => format!("{}", val),
+        Value::String { val, .. } => val.to_string(),
+        Value::Int { val, .. } | Value::Duration { val, .. } => format!("{val}"),
+        Value::Float { val, .. } => format!("{val}"),
+        Value::Bool { val, .. } => format!("{val}"),
+        Value::Date { val, .. } => format!("{val}"),
         Value::Nothing { .. } => "null".to_string(),
         Value::List { vals, .. } => {
             if vals.is_empty() {
@@ -72,30 +61,18 @@ pub fn format_nu_value(value: &Value) -> String {
                 format!("{{{}}}", items.join(", "))
             }
         }
-        _ => format!("{:?}", value),
+        _ => format!("{value:?}"),
     }
-}
-
-/// Convert a JSON object to a Nushell record and format it as a table string
-pub fn format_json_object_as_table(
-    json_obj: &serde_json::Map<String, serde_json::Value>,
-    span: Option<Span>,
-) -> String {
-    match serde_json::Value::Object(json_obj.clone()) {
-        json => format_json_as_nu(&json, span),
-    }
-}
-
-/// Convert a Nushell Value to PipelineData for display
-pub fn nu_value_to_pipeline_data(value: Value) -> PipelineData {
-    value.into_pipeline_data()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use core::f64;
+
     use nu_protocol::record;
     use serde_json::json;
+
+    use super::*;
 
     fn test_span() -> Span {
         Span::unknown()
@@ -112,7 +89,7 @@ mod tests {
         assert_eq!(format_nu_value(&int_val), "42");
 
         // Test float formatting
-        let float_val = Value::float(3.14, test_span());
+        let float_val = Value::float(f64::consts::PI, test_span());
         assert_eq!(format_nu_value(&float_val), "3.14");
 
         // Test boolean formatting
@@ -170,8 +147,8 @@ mod tests {
         let formatted = format_nu_value(&record_val);
         assert!(formatted.contains("name: John"));
         assert!(formatted.contains("age: 30"));
-        assert!(formatted.starts_with("{"));
-        assert!(formatted.ends_with("}"));
+        assert!(formatted.starts_with('{'));
+        assert!(formatted.ends_with('}'));
     }
 
     #[test]
@@ -231,7 +208,7 @@ mod tests {
         if let Value::String { val, .. } = nu_string {
             assert_eq!(val, "test");
         } else {
-            panic!("Expected String, got {:?}", nu_string);
+            panic!("Expected String, got {nu_string:?}");
         }
 
         let json_number = json!(123);
@@ -239,7 +216,7 @@ mod tests {
         if let Value::Int { val, .. } = nu_number {
             assert_eq!(val, 123);
         } else {
-            panic!("Expected Int, got {:?}", nu_number);
+            panic!("Expected Int, got {nu_number:?}");
         }
     }
 
@@ -257,7 +234,7 @@ mod tests {
             {
                 assert_eq!(string_val, "hello pipeline");
             } else {
-                panic!("Expected String, got {:?}", val);
+                panic!("Expected String, got {val:?}");
             }
         } else {
             panic!("Expected PipelineData::Value, got something else");
